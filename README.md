@@ -106,7 +106,7 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 - How long T3 Connect takes to come back after a machine has slept for many hours.
 
 **Loose ends:**
-- **Committed locally only.** Branch `t3agent37` has one commit, `8992f61`: the whole port with the Tauri panel, before the switch to GPUI. Everything since is uncommitted. `origin` still points at `paukraft/t3boat`. The folder above this repo is a T3 Code scratch repo that records `t3agent37` as a gitlink with no `.gitmodules`.
+- **Where the code lives:** `origin` is [dagurleo/t3agent37](https://github.com/dagurleo/t3agent37) (private), `main`; the local branch is `t3agent37`, tracking it. `upstream` is t3boat. `8992f61` is the last commit with the Tauri panel. The T3 Code scratch folder above this repo has the same `origin` but its own old history (one commit, a gitlink to this folder): don't pull or push there.
 - **`apps/web` is t3boat's marketing site, kept as the baseline for t3agent37's.** It doesn't build: it imports the React panel (`@t3boat/desktop`: its components, pixel engine and mock), which left with Tauri. That code is in `8992f61` (`apps/desktop/src`). Because `apps/web` needs that workspace package, `bun install` at the root fails until the site is redone.
 - **Package names are still `t3boat` / `@t3boat/*`** in the root and `apps/web` `package.json`. The app itself is t3agent37 everywhere else (bundle id `dev.t3agent37.app`).
 - **GitHub sign-in copies its device code to the clipboard.** Copying anything else afterwards loses it. Showing the code in the panel would be better.
