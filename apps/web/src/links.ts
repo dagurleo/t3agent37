@@ -1,8 +1,8 @@
 /**
- * The site's own address. PLACEHOLDER: the domain isn't decided yet. Set it here; index.html
- * (through vite.config.ts), scripts/prerender.ts and the launch video read it from this one place.
+ * The site's own address (a Cloudflare Worker, wrangler.jsonc). index.html (through vite.config.ts),
+ * scripts/prerender.ts and the launch video read it from this one place.
  */
-export const SITE = "https://t3agent37.example";
+export const SITE = "https://t3agent37.dagurleo.com";
 
 export const REPO = "https://github.com/dagurleo/t3agent37";
 export const T3CODE = "https://t3.codes";

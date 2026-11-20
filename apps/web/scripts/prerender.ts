@@ -1,7 +1,6 @@
 // After `vite build`: fills dist/index.html with the prerendered site, writes its markdown twin
-// (index.md) plus llms.txt and llms-full.txt for agents, and the Vercel routes that serve the twin
-// to agents at `/`. Vercel reads vercel.json from the repo, so commit it when it changes.
-import { htmlToMarkdown, llmsFullTxt, llmsTxt, vercelRoutes } from "@usenotra/agentside/build";
+// (index.md) plus llms.txt and llms-full.txt for agents. worker.ts serves the twin to agents at `/`.
+import { htmlToMarkdown, llmsFullTxt, llmsTxt } from "@usenotra/agentside/build";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { SITE } from "../src/links";
@@ -27,4 +26,3 @@ const pages = [{ path: "/", title: TITLE, description: DESCRIPTION, markdown: ht
 await Bun.write(join(dist, "index.md"), pages[0].markdown);
 await Bun.write(join(dist, "llms.txt"), llmsTxt(pages, { title: TITLE, description: DESCRIPTION, siteUrl: SITE }));
 await Bun.write(join(dist, "llms-full.txt"), llmsFullTxt(pages, { siteUrl: SITE }));
-await Bun.write(join(web, "vercel.json"), `${JSON.stringify(vercelRoutes(pages.map((page) => page.path)), null, 2)}\n`);

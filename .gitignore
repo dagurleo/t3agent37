@@ -29,3 +29,6 @@ dist-ssr
 .envrc
 .dev.vars
 .vercel
+
+# Cloudflare
+.wrangler

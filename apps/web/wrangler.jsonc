@@ -1,0 +1,21 @@
+{
+  // t3agent37.dagurleo.com: the prerendered site in dist/, served as Workers static assets, with a
+  // small Worker in front of the pages (worker.ts) for agents that want Markdown. Build before
+  // deploying: `bun run deploy` (in apps/web) does both.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "t3agent37-site",
+  // The "Mucho" account, which has the dagurleo.com zone.
+  "account_id": "913ea66e4789612e4d55d396e3ffed24",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false,
+  "routes": [{ "pattern": "t3agent37.dagurleo.com", "custom_domain": true }],
+  "main": "worker.ts",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    // Pages, index.md, llms.txt and the like go through worker.ts; the build's scripts, styles and
+    // fonts, the mock T3 Code window and the share card come straight from the assets.
+    "run_worker_first": ["/*", "!/assets/*", "!/t3code/*", "!/og.png", "!/og.mp4"]
+  }
+}

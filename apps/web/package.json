@@ -8,7 +8,8 @@
     "build": "tsc && vite build && vite build --ssr src/prerender.tsx --outDir dist-ssr && bun scripts/prerender.ts",
     "preview": "vite preview",
     "og": "bun scripts/og.ts",
-    "launch": "bun scripts/launch.ts"
+    "launch": "bun scripts/launch.ts",
+    "deploy": "bun run build && wrangler deploy"
   },
   "dependencies": {
     "@fontsource-variable/funnel-display": "^5.3.0",
@@ -24,6 +25,7 @@
     "@vitejs/plugin-react": "^6.0.2",
     "playwright-core": "^1.65.1",
     "typescript": "~6.0.3",
-    "vite": "^8.0.16"
+    "vite": "^8.0.16",
+    "wrangler": "^4.165.0"
   }
 }
