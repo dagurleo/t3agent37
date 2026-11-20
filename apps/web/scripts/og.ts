@@ -13,15 +13,15 @@ const FPS = 12;
 const SECONDS = 8;
 const OUT = join(import.meta.dir, "../public");
 
-/** The hero alone at card size, built to read small: wordmark, a big headline and the sea. */
+/** The hero alone at card size, built to read small: wordmark, a big headline and the rooftop. */
 const CARD_CSS = `
   .hero { height: ${H}px; min-height: 0; padding-bottom: 0; }
   .nav, .hero-copy { width: calc(100% - 128px); }
   .nav { height: 120px; }
   .hero-copy { padding-block: 40px 56px; }
   .hero h1 { font-size: 84px; max-width: none; }
-  .sea-tag { font-size: 20px; padding: 4px 8px 3px; }
-  .nav-links, .hero-copy p, .install { display: none; }
+  .roof-tag { font-size: 20px; padding: 4px 8px 3px; }
+  .nav-links, .hero-copy p, .hero-cta { display: none; }
 `;
 
 async function open(page: Page) {
@@ -30,7 +30,8 @@ async function open(page: Page) {
   await page.evaluate(() => document.fonts.ready);
 }
 
-const browser = await chromium.launch({ channel: "chrome" });
+// Google Chrome if installed, else playwright's own Chromium (`bunx playwright-core install chromium`)
+const browser = await chromium.launch({ channel: "chrome" }).catch(() => chromium.launch());
 const card = { viewport: { width: W, height: H }, colorScheme: "light" as const };
 
 const still = await browser.newPage({ ...card, deviceScaleFactor: 2 });

@@ -1,24 +1,25 @@
-// The launch video, one 1280 × 720 frame. It opens and ends on the hero's sea; between, a
-// desktop on plain blue: a menu bar, t3boat's popover on its mock backend and T3 Code's window,
+// The launch video, one 1280 × 720 frame. It opens and ends on the hero's rooftop; between, a
+// desktop on plain dusk plum: a menu bar, t3agent37's panel on its mock backend and T3 Code's window,
 // a camera that frames what is happening, the site's red arrow at what to watch, and a band
 // below that says what it is. scripts/launch.ts moves the camera, arrow and cursor, and clicks.
 import { useEffect, useRef, useState } from "react";
-import icon from "@t3boat/desktop/icon.png";
-import tray from "../../../desktop/src-tauri/icons/tray@2x.png";
-import type { MockBackend } from "@t3boat/desktop/mock";
-import type { MachineView } from "@t3boat/desktop/types";
+import icon from "../assets/icon.png";
+import tray from "../assets/tray@2x.png";
+import type { MockBackend } from "../panel/mock";
+import type { MachineView } from "../panel/types";
 import { Hero } from "../Hero";
-import { AppleMark, BoatLogo, LinuxMark, T3CodeMark, WindowsMark } from "../logos";
+import { SITE } from "../links";
+import { AppleMark, T3CodeMark } from "../logos";
 import { NO_PICK, sendTurn, Thread, type Picker, type Stage } from "../Thread";
 
 /** open: the hero. desk: the popover alone. chat: T3 Code next to it. end: the hero, signed. */
 export type Scene = "open" | "desk" | "chat" | "end";
 /** The one machine: made in the popover, then picked in T3 Code. */
-export const MACHINE = "jukebox";
+export const MACHINE = "raven";
 
 /** What the band says: the window to watch, the line, and whether time runs fast. */
 export interface Line {
-  look: "t3boat" | "T3 Code";
+  look: "t3agent37" | "T3 Code";
   text: string;
   fast?: boolean;
 }
@@ -94,14 +95,14 @@ export function Launch() {
 
   return (
     <div className="launch" data-scene={scene}>
-      <Hero nav={<span className="wordmark">t3boat</span>}>
+      <Hero nav={<span className="wordmark">t3agent37</span>}>
         <h1>
           Run your{" "}
           <span className="h1-t3" role="img" aria-label="T3 Code">
             <T3CodeMark aria-hidden />
             Code
           </span>{" "}
-          agents in the cloud, on <BoatLogo className="h1-boat" role="img" aria-label="Boat" />
+          agents in the cloud, on <span className="h1-agent37">Agent37</span>
         </h1>
       </Hero>
 
@@ -131,7 +132,7 @@ export function Launch() {
         <iframe
           className="win-app"
           src="/demo.html?machines=0&ready=1"
-          title="t3boat"
+          title="t3agent37"
           width={380}
           height={560}
           onLoad={(e) => e.currentTarget.contentWindow?.mock?.then(setMock)}
@@ -172,15 +173,14 @@ export function Launch() {
       <div className="endcard">
         <div className="endcard-mark">
           <img src={icon} alt="" width={88} height={88} />
-          t3boat
+          t3agent37
         </div>
         <p className="endcard-line">Free and open source</p>
         <p className="endcard-os">
           <AppleMark aria-hidden />
-          <WindowsMark aria-hidden />
-          <LinuxMark aria-hidden />
+          macOS 13+
         </p>
-        <p className="endcard-url">t3boat.paukraft.com</p>
+        <p className="endcard-url">{new URL(SITE).host}</p>
       </div>
     </div>
   );

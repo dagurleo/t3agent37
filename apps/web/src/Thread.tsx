@@ -4,8 +4,8 @@
 // says. The mock only draws the picker: clicks on it come back here, to whoever holds it.
 // Shared by the site's demo (Together.tsx) and the launch video (launch/Launch.tsx).
 import { useEffect, useRef, useState } from "react";
-import type { MockBackend } from "@t3boat/desktop/mock";
-import type { MachineView } from "@t3boat/desktop/types";
+import type { MockBackend } from "./panel/mock";
+import type { MachineView } from "./panel/types";
 
 type Message =
   | { kind: "user" | "assistant"; id: string; text: string }

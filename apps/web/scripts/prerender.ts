@@ -4,11 +4,11 @@
 import { htmlToMarkdown, llmsFullTxt, llmsTxt, vercelRoutes } from "@usenotra/agentside/build";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import { SITE } from "../src/links";
 
-const SITE = "https://t3boat.paukraft.com";
-const TITLE = "t3boat";
+const TITLE = "t3agent37";
 const DESCRIPTION =
-  "Run your T3 Code agents in the cloud, on your own Boat subscription. Machines sleep when idle, so you only pay for the minutes your agents run.";
+  "Run your T3 Code agents in the cloud, on your own Agent37 Cloud account. Machines sleep when idle and bill only disk, so you pay compute only for the minutes your agents run. macOS 13+.";
 
 const web = join(import.meta.dir, "..");
 const dist = join(web, "dist");

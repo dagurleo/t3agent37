@@ -1,10 +1,10 @@
-// T3 Code and t3boat side by side, each in a frame: a mock of T3 Code's window, and the real
-// popover on its mock backend, with no machines yet. The visitor makes one, picks it in T3
+// T3 Code and t3agent37 side by side, each in a frame: a mock of T3 Code's window, and the panel
+// (the React port of the app's GPUI panel, which looks the same) on its mock backend, with no machines yet. The visitor makes one, picks it in T3
 // Code, and sends; the agent then works on it. An arrow points at what to click, ringed, its
 // note saying what that does (clicking the note works too), or at what to watch meanwhile.
 import { useEffect, useRef, useState } from "react";
-import type { MockBackend } from "@t3boat/desktop/mock";
-import type { MachineView } from "@t3boat/desktop/types";
+import type { MockBackend } from "./panel/mock";
+import type { MachineView } from "./panel/types";
 import { NO_PICK, sendTurn, Thread, type Picker, type Stage } from "./Thread";
 
 type Look = "t3" | "app";
@@ -21,7 +21,7 @@ interface Spot {
 }
 
 /** The visitor's machine: typed into the new-machine form over the name it suggests. */
-const NAME = "beebox";
+const NAME = "osprey";
 /** The new-machine form's launch button. */
 const LAUNCH = ".view-foot button[type=submit]";
 
@@ -49,7 +49,7 @@ function phaseOf(machine: MachineView | undefined, picker: Picker, stage: Stage)
   // under its status line
   const status = { at: ".row-detail", x: 0.3, y: 1 };
   if (machine.state === "creating" || !machine.paired)
-    return { look: "app", spots: [{ ...status, text: "t3boat creates the machine on Boat, sets everything up, and connects it to T3 Code." }] };
+    return { look: "app", spots: [{ ...status, text: "t3agent37 creates the machine on Agent37 Cloud, sets everything up, and adds it to T3 Code." }] };
   const { name } = machine;
   if (stage === "unsent" && picker.selectedId !== name)
     return {
@@ -168,7 +168,7 @@ export function Together() {
     <main id="how-it-works" className="together">
       <h2>Create a machine. Pick it in T3 Code. Your agents run there.</h2>
       <p className="together-lede">
-        Try it right here: click where the <span className="together-red">red arrow</span> points.
+        Try it right here: click where the <span className="together-red">amber arrow</span> points.
       </p>
 
       <div ref={box} className="stage" data-look={now.look}>
@@ -206,7 +206,7 @@ export function Together() {
         <div className="pane-app">
           <iframe
             src="/demo.html?machines=0&ready=1"
-            title="t3boat demo"
+            title="t3agent37 panel demo"
             width={380}
             height={560}
             loading="lazy"

@@ -1,18 +1,18 @@
-import icon from "@t3boat/desktop/icon.png";
+import icon from "./assets/icon.png";
 import { Together } from "./Together";
 import { Hero } from "./Hero";
 import { Relay } from "./Relay";
+import { Pricing } from "./Pricing";
 import { InstallButton } from "./InstallButton";
-import { AppleMark, BoatLogo, GitHubMark, LinuxMark, T3CodeMark, WindowsMark } from "./logos";
-import { BOAT, CREATOR, REPO, T3CODE } from "./links";
+import { AppleMark, GitHubMark, T3CodeMark } from "./logos";
+import { AGENT37, REPO, T3BOAT, T3CODE } from "./links";
 
-/** The systems t3boat runs on, as their marks. */
-function OsMarks({ className }: { className: string }) {
+/** The one system t3agent37 runs on, as its mark and version. */
+function MacOnly({ className }: { className: string }) {
   return (
-    <span className={className} role="img" aria-label="macOS, Windows and Linux">
+    <span className={className}>
       <AppleMark aria-hidden />
-      <WindowsMark aria-hidden />
-      <LinuxMark aria-hidden />
+      macOS 13+
     </span>
   );
 }
@@ -21,10 +21,15 @@ function Wordmark({ withIcon = false }: { withIcon?: boolean }) {
   return (
     <a className="wordmark" href="/">
       {withIcon && <img src={icon} alt="" width={40} height={40} />}
-      t3boat
+      t3agent37
     </a>
   );
 }
+
+/** How to build it by hand, as the README's Install section has it. */
+const BUILD = `git clone ${REPO}
+cd t3agent37/apps/desktop
+scripts/bundle-macos.sh --open`;
 
 export function Site() {
   return (
@@ -35,6 +40,7 @@ export function Site() {
             <Wordmark />
             <div className="nav-links">
               <a href="#how-it-works">How it works</a>
+              <a href="#pricing">Pricing</a>
               <a className="nav-btn" href={REPO}>
                 <GitHubMark aria-hidden />
                 GitHub
@@ -44,18 +50,24 @@ export function Site() {
         }
       >
         {/* data-ai-content: what agents read in place of the marks (scripts/prerender.ts) */}
-        <h1 data-ai-content="# Run your T3 Code agents in the cloud, on Boat">
+        <h1 data-ai-content="# Run your T3 Code agents in the cloud, on Agent37">
           Run your{" "}
           <span className="h1-t3" role="img" aria-label="T3 Code">
             <T3CodeMark aria-hidden />
             Code
           </span>{" "}
-          agents in the cloud, on <BoatLogo className="h1-boat" role="img" aria-label="Boat" />
+          agents in the cloud, on <span className="h1-agent37">Agent37</span>
         </h1>
-        <p>t3boat creates the machines and adds them to T3 Code. They sleep when idle, so you only pay for the minutes your agents run.</p>
+        <p>
+          t3agent37 creates machines on your Agent37 Cloud account and adds them to T3 Code. They sleep when idle and bill
+          only their disk, so you pay for compute only while your agents run.
+        </p>
         <div className="hero-cta">
           <InstallButton />
-          <OsMarks className="hero-os" />
+          <span className="hero-meta" data-ai-content="macOS 13 or later. Build from source.">
+            <MacOnly className="hero-os" />
+            <span>Build from source</span>
+          </span>
         </div>
       </Hero>
 
@@ -63,7 +75,9 @@ export function Site() {
 
       <Relay />
 
-      <section className="needs">
+      <Pricing />
+
+      <section className="needs" id="install">
         <p className="eyebrow">Before you install</p>
         <h2>What you need</h2>
         <ul className="needs-list">
@@ -74,18 +88,31 @@ export function Site() {
             </a>
             <span>The desktop app</span>
           </li>
-          <li data-ai-content={`A [Boat](${BOAT}) account. Your machines run there.`}>
-            <a href={BOAT} className="needs-logo" aria-label="Boat">
-              <BoatLogo className="needs-boat" aria-hidden />
+          <li data-ai-content={`An [Agent37 Cloud](${AGENT37}) account and an API key. The key stays on your Mac, never on a machine.`}>
+            <a href={AGENT37} className="needs-logo">
+              Agent37
             </a>
-            <span>An account. Your machines run there.</span>
+            <span>A Cloud account and an API key. The key stays on your Mac, never on a machine.</span>
           </li>
-          <li>
-            <OsMarks className="needs-logo needs-os" />
-            <span>macOS, Windows or Linux</span>
+          <li data-ai-content="A Mac on macOS 13 or later, with Rust and Xcode's command line tools to build it">
+            <MacOnly className="needs-logo needs-os" />
+            <span>A Mac, with Rust and Xcode's command line tools to build it</span>
           </li>
         </ul>
-        <InstallButton />
+
+        <div className="build">
+          <div className="build-copy">
+            <h3>Build it from source</h3>
+            <p>
+              There's no prebuilt download yet. Hand the job to your coding agent, or run the build yourself: the app lands
+              in your menu bar.
+            </p>
+            <InstallButton />
+          </div>
+          <pre className="build-code" aria-label="Build commands">
+            <code>{BUILD}</code>
+          </pre>
+        </div>
       </section>
 
       <footer className="footer">
@@ -96,9 +123,7 @@ export function Site() {
               <T3CodeMark className="footer-t3" aria-hidden />
               Code
             </a>
-            <a href={BOAT} aria-label="Boat">
-              <BoatLogo className="footer-boat" aria-hidden />
-            </a>
+            <a href={AGENT37}>Agent37</a>
             <a href={REPO}>
               <GitHubMark aria-hidden />
               GitHub
@@ -107,9 +132,9 @@ export function Site() {
         </div>
         <div className="footer-fine">
           <p>
-            Made by <a href={CREATOR}>Pau Kraft</a>
+            A fork of <a href={T3BOAT}>t3boat by Pau Kraft</a>. MIT licensed.
           </p>
-          <p>Not affiliated with or endorsed by T3 Code or Boat.</p>
+          <p>Not affiliated with or endorsed by T3 Code, Agent37 or Boat.</p>
         </div>
       </footer>
     </>

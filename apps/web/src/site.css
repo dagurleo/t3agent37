@@ -1,4 +1,4 @@
-/* The site on the app's brand: pixel sea, square corners, 1px blue frames, hard shadows. */
+/* The site on the app's brand: noir amber, the pixel rooftop, square corners, 1px frames, hard shadows. */
 
 * {
   box-sizing: border-box;
@@ -25,6 +25,7 @@ body {
 
 h1,
 h2,
+h3,
 p {
   margin: 0;
   padding: 0;
@@ -40,35 +41,33 @@ a {
   outline-offset: 3px;
 }
 
-/* ── hero: the sea ─────────────────────────────────── */
+/* ── hero: the rooftop ─────────────────────────────── */
 
-/* ends above the fold, so the page below shows */
+/* ends above the fold, so the page below shows. The sky up top is dusk plum in both themes, so
+   the hero's ink is the paper's cream either way. */
 .hero {
-  --hero-shadow: var(--navy-800);
+  --sky-ink: #fdfaf6;
+  --sky-shadow: #0c0a0e;
+  --lamp: #ffb547;
   position: relative;
-  min-height: min(86svh, 800px);
-  /* the scene's least share of the hero */
-  padding-bottom: 260px;
+  min-height: min(92svh, 880px);
+  /* the scene's least share of the hero: the skyline (Hero.tsx's GAP rows) and the roof */
+  padding-bottom: 360px;
   overflow: hidden;
-  color: #fff;
+  color: var(--sky-ink);
 }
 
-@media (prefers-color-scheme: dark) {
-  .hero {
-    --hero-shadow: var(--ocean);
-  }
-}
-
-.sea {
+.roof {
   position: absolute;
   inset: 0;
 }
-.sea canvas {
+.roof canvas {
   display: block;
   image-rendering: pixelated;
 }
 
-.sea-tag {
+/* the panel's tags over its agents, at the hero's scale */
+.roof-tag {
   position: absolute;
   left: 0;
   top: 0;
@@ -77,8 +76,9 @@ a {
   white-space: nowrap;
   background: var(--tag-bg);
   color: var(--tag-fg);
+  will-change: transform;
 }
-.sea-tag.is-asleep {
+.roof-tag.is-asleep {
   background: var(--tag-dim-bg);
   color: var(--tag-dim-fg);
   letter-spacing: 0.06em;
@@ -91,11 +91,12 @@ a {
   margin-inline: auto;
 }
 
-/* the bar in the sea's own terms: mono labels like the boats' tags, a button with the windows' hard shadow */
+/* the bar in the roof's own terms: mono labels like the agents' tags, a button with a hard shadow */
 .nav {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
   height: 88px;
 }
 
@@ -103,20 +104,20 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 12px;
-  font: 600 48px/1 var(--font-display);
+  font: 600 40px/1 var(--font-display);
   letter-spacing: -0.03em;
 }
 
 .nav-links {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 12px;
   font: 500 13px/1 var(--font-mono);
 }
 /* lit up like a tag on hover */
 .nav-links a {
   padding: 7px 8px 6px;
-  color: rgb(255 255 255 / 0.82);
+  color: rgb(253 250 246 / 0.82);
   transition:
     background-color 120ms ease,
     color 120ms ease;
@@ -132,23 +133,24 @@ a {
   align-items: center;
   gap: 8px;
   height: 40px;
+  margin-left: 8px;
   padding: 0 14px;
-  background: var(--wash);
-  color: var(--ocean);
-  box-shadow: 4px 4px 0 var(--hero-shadow);
+  background: var(--sky-ink);
+  color: var(--ink);
+  box-shadow: 4px 4px 0 var(--sky-shadow);
   transition:
     transform 120ms ease,
     box-shadow 120ms ease;
 }
 .nav-links .nav-btn:hover {
-  background: var(--wash);
-  color: var(--ocean);
+  background: var(--sky-ink);
+  color: var(--ink);
   transform: translate(-1px, -1px);
-  box-shadow: 5px 5px 0 var(--hero-shadow);
+  box-shadow: 5px 5px 0 var(--sky-shadow);
 }
 .nav-links .nav-btn:active {
   transform: translate(4px, 4px);
-  box-shadow: 0 0 0 var(--hero-shadow);
+  box-shadow: 0 0 0 var(--sky-shadow);
 }
 .nav-btn svg {
   width: 16px;
@@ -156,54 +158,61 @@ a {
 }
 
 /* the button alone on phones */
-@media (max-width: 479px) {
+@media (max-width: 599px) {
   .nav-links a:not(.nav-btn) {
     display: none;
+  }
+  .wordmark {
+    font-size: 32px;
+  }
+  /* the roof's agents come up into the first screen */
+  .hero {
+    padding-bottom: 316px;
+  }
+  .hero-copy {
+    padding-top: 36px;
   }
 }
 
 /* on plain sky: the hero draws its scene below this block */
 .hero-copy {
-  padding-block: clamp(56px, 13svh, 136px) 14px;
+  padding-block: clamp(48px, 11svh, 120px) 8px;
 }
 
 h1 {
   width: fit-content;
-  max-width: 15em;
-  font: 500 clamp(38px, 5.8vw, 80px) / 1.05 var(--font-display);
+  max-width: 13em;
+  font: 500 clamp(40px, 5.8vw, 80px) / 1.05 var(--font-display);
   letter-spacing: -0.03em;
   text-wrap: balance;
 }
 
-/* the logos stand in for the names: cap height, on the baseline */
+/* T3 Code's mark stands in for its name: cap height, on the baseline */
 .h1-t3 {
   white-space: nowrap;
 }
-.h1-t3 svg,
-.h1-boat {
-  width: auto;
-}
 .h1-t3 svg {
+  width: auto;
   height: 0.7em;
   margin-right: 0.15em;
 }
-.h1-boat {
-  height: 1em;
-  margin-left: 0.04em;
-  vertical-align: -0.02em;
+/* Agent37 by name, lit like the windows' sodium lamps */
+.h1-agent37 {
+  color: var(--lamp);
+  white-space: nowrap;
 }
 
 .hero-copy p {
   width: fit-content;
   margin-top: 26px;
-  max-width: 31em;
+  max-width: 32em;
   font-size: clamp(16px, 1.35vw, 18px);
   line-height: 1.55;
-  color: rgb(255 255 255 / 0.92);
+  color: rgb(253 250 246 / 0.9);
   text-wrap: pretty;
 }
 
-/* the button, and beside it the systems it installs on */
+/* the button, and beside it what it runs on and how it installs */
 .hero-cta {
   display: flex;
   flex-wrap: wrap;
@@ -214,25 +223,38 @@ h1 {
 .hero-cta .install {
   margin-top: 0;
 }
+.hero-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  font: 400 13px/1 var(--font-mono);
+  color: rgb(253 250 246 / 0.78);
+}
 .hero-os {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  color: rgb(255 255 255 / 0.7);
+  gap: 8px;
 }
 .hero-os svg {
   width: auto;
-  height: 14px;
+  height: 15px;
+  translate: 0 -1px;
+}
+.hero-meta > span + span::before {
+  content: "·";
+  margin-right: 16px;
+  opacity: 0.6;
 }
 
 /* ── the install button ────────────────────────────── */
 
 .install {
-  /* white on the day sky; on the night sky the ocean button stands out on its own */
-  --install-bg: var(--wash);
-  --install-hover: var(--blue-50);
-  --install-fg: var(--ocean);
-  --install-shadow: 4px 4px 0 var(--hero-shadow);
+  /* sodium amber on the sky, pressed into the night's shadow */
+  --install-bg: var(--accent);
+  --install-hover: var(--accent-strong);
+  --install-fg: var(--accent-fg);
+  --install-shadow: 4px 4px 0 var(--sky-shadow, var(--shadow));
   display: inline-flex;
   align-items: center;
   gap: 9px;
@@ -249,14 +271,6 @@ h1 {
   transition:
     transform 120ms ease,
     background-color 120ms ease;
-}
-@media (prefers-color-scheme: dark) {
-  .install {
-    --install-bg: var(--ocean);
-    --install-hover: var(--blue-500);
-    --install-fg: #fff;
-    --install-shadow: none;
-  }
 }
 .install:hover {
   background: var(--install-hover);
@@ -335,9 +349,9 @@ h2 {
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  border: 1px solid var(--danger);
+  border: 1px solid var(--accent);
   background: var(--bg);
-  color: var(--danger);
+  color: var(--accent-text);
   font: 400 13px/1 var(--font-mono);
   transform: translateY(-50%);
 }
@@ -358,10 +372,10 @@ h2 {
   font: 500 19px/1.4 var(--font-display);
 }
 .together-red {
-  color: var(--danger);
+  color: var(--accent-text);
 }
 
-/* the two windows in a red frame, an arrow over them */
+/* the two windows in an amber frame, an arrow over them */
 .stage {
   position: relative;
   display: grid;
@@ -369,7 +383,7 @@ h2 {
   column-gap: 48px;
   margin-top: 44px;
   padding: 40px 36px 36px 28px;
-  border: 1px solid var(--danger);
+  border: 1px solid var(--accent);
 }
 .pane-t3 {
   grid-area: t3;
@@ -394,11 +408,12 @@ h2 {
   box-sizing: content-box;
 }
 
-/* the window to watch: a heavier frame, and in it an arrow at the spot: red where to click */
+/* the window to watch: a heavier frame, and in it an arrow at the spot: amber where to click,
+   ink where to look */
 .stage[data-look="t3"] .t3,
 .stage[data-look="app"] .pane-app iframe {
-  border-color: var(--accent);
-  outline-color: var(--accent);
+  border-color: var(--fg);
+  outline-color: var(--fg);
 }
 .pointer {
   position: absolute;
@@ -410,14 +425,14 @@ h2 {
   display: block;
   width: 50px;
   height: 50px;
-  fill: var(--accent);
+  fill: var(--fg);
   stroke: var(--bg);
   stroke-width: 0.5;
   paint-order: stroke;
   shape-rendering: crispEdges;
 }
 .pointer[data-click] > svg {
-  fill: var(--danger);
+  fill: var(--accent);
 }
 /* at the arrow's tail: what to click and what it does, or what is happening */
 .note {
@@ -432,18 +447,18 @@ h2 {
   padding: 10px 14px;
   font: 600 15px/1.3 var(--font-display);
   text-align: left;
-  animation: note-in var(--ocean-ease);
+  animation: note-in var(--strip-ease);
   box-shadow: 4px 4px 0 var(--shadow);
 }
 .note p {
-  background: var(--accent);
-  color: var(--accent-fg);
+  background: var(--fg);
+  color: var(--bg);
 }
 .note > button {
   border: 0;
   border-radius: 0;
-  background: var(--danger);
-  color: var(--bg);
+  background: var(--accent);
+  color: var(--accent-fg);
   cursor: pointer;
 }
 .note p button {
@@ -452,8 +467,8 @@ h2 {
   padding: 8px 12px;
   border: 0;
   border-radius: 0;
-  background: var(--accent-fg);
-  color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
   font: inherit;
   cursor: pointer;
 }
@@ -469,13 +484,13 @@ h2 {
   pointer-events: none;
 }
 .ring[data-on] {
-  outline: 2px solid var(--danger);
+  outline: 2px solid var(--accent);
   outline-offset: 3px;
   animation: ring-ping 1.4s ease-out infinite;
 }
 @keyframes ring-ping {
   from {
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 60%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 60%, transparent);
   }
   to {
     box-shadow: 0 0 0 16px transparent;
@@ -502,7 +517,7 @@ h2 {
   transform-origin: 0 0;
 }
 
-/* ── under the hood: T3 Code, t3boat, the machines ─ */
+/* ── under the hood: T3 Code, t3agent37, the machines ─ */
 
 .relay {
   /* one beat for a waking machine's wire and row, so they pulse together */
@@ -512,7 +527,7 @@ h2 {
   padding-bottom: 128px;
 }
 
-/* the laptop and Boat, each a dashed region; wires drawn over both */
+/* the laptop and Agent37 Cloud, each a dashed region; wires drawn over both */
 .relay-map {
   position: relative;
   isolation: isolate;
@@ -547,12 +562,6 @@ h2 {
   background: var(--bg);
   font: 400 12px/1 var(--font-mono);
   color: var(--muted);
-}
-.relay-where svg {
-  display: block;
-  width: auto;
-  height: 15px;
-  color: var(--fg);
 }
 
 .relay-name {
@@ -602,7 +611,7 @@ h2 {
   background: currentColor;
 }
 
-/* t3boat, and what it is doing when that is more than passing things along */
+/* t3agent37, and what it is doing when that is more than passing things along */
 .relay-hub {
   position: relative;
   display: grid;
@@ -615,7 +624,7 @@ h2 {
   width: 56px;
   height: 56px;
 }
-/* the message t3boat holds for a sleeping machine, on its icon like a badge */
+/* the message t3agent37 holds for a sleeping machine, on its icon like a badge */
 .relay-held {
   position: absolute;
   top: -4px;
@@ -628,7 +637,7 @@ h2 {
 }
 .relay-held[data-on] {
   visibility: visible;
-  animation: relay-pop var(--ocean-ease) both;
+  animation: relay-pop var(--strip-ease) both;
 }
 .relay-doing {
   position: absolute;
@@ -642,10 +651,10 @@ h2 {
 .relay-doing[data-on] {
   background: var(--accent);
   color: var(--accent-fg);
-  animation: relay-in var(--ocean-ease) both;
+  animation: relay-in var(--strip-ease) both;
 }
 
-/* the machines: boat, name, real state */
+/* the machines: field agent, name, real state */
 .relay-cloud ul {
   gap: 16px;
 }
@@ -665,7 +674,7 @@ h2 {
   background: var(--accent);
   animation: relay-wake-card var(--wake-pulse) ease-in-out infinite alternate;
 }
-.relay-cloud .boat-icon {
+.relay-cloud .spy-icon {
   display: block;
   width: 48px;
   height: 42px;
@@ -744,7 +753,7 @@ h2 {
   }
 }
 
-/* stacked: laptop over Boat, wires running down */
+/* stacked: laptop over Agent37 Cloud, wires running down */
 @media (max-width: 900px) {
   .relay {
     padding-bottom: 88px;
@@ -756,7 +765,7 @@ h2 {
     flex-direction: column;
     gap: 56px;
   }
-  /* room on the left for the wires' spine; Boat's name on the right, clear of it */
+  /* room on the left for the wires' spine; the cloud's name on the right, clear of it */
   .relay-cloud {
     padding-left: 40px;
   }
@@ -775,15 +784,136 @@ h2 {
   }
 }
 
+/* ── pricing ───────────────────────────────────────── */
+
+.pricing {
+  scroll-margin-top: 24px;
+  width: min(1160px, 100% - 48px);
+  margin-inline: auto;
+  padding-bottom: 128px;
+}
+.pricing-lede {
+  max-width: 40em;
+  margin-top: 16px;
+  color: var(--muted);
+  text-wrap: pretty;
+}
+
+/* asleep, then awake: one framed card each, the agent's pose on top */
+.pricing-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
+  gap: 24px;
+  margin-top: 40px;
+}
+.price-card {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+  padding: 24px 24px 26px;
+  border: 1px solid var(--frame);
+  box-shadow: 8px 8px 0 var(--shadow);
+}
+.price-head {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.price-head .spy-icon {
+  display: block;
+  width: 72px;
+  height: 63px;
+  image-rendering: pixelated;
+}
+.price-tag {
+  margin-bottom: 10px;
+  padding: 3px 6px 2px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: 400 12px/1 var(--font-mono);
+}
+.price-tag.is-asleep {
+  background: var(--tag-dim-bg);
+  color: var(--tag-dim-fg);
+  letter-spacing: 0.06em;
+}
+.price-name {
+  font: 400 13px/1 var(--font-mono);
+  color: var(--muted);
+}
+.price-big {
+  font: 600 56px/1 var(--font-display);
+  letter-spacing: -0.03em;
+}
+.price-big span {
+  margin-left: 4px;
+  font: 400 15px/1 var(--font-mono);
+  letter-spacing: 0;
+  color: var(--muted);
+}
+.price-note {
+  max-width: 24em;
+  color: var(--muted);
+  text-wrap: pretty;
+}
+
+.price-table {
+  width: 100%;
+  border-collapse: collapse;
+  font: 400 13px/1.3 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.price-table th,
+.price-table td {
+  padding: 9px 12px 8px 0;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+.price-table thead th {
+  padding-top: 4px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.price-table tbody th {
+  font-weight: 500;
+}
+.price-table td:last-child,
+.price-table th:last-child {
+  padding-right: 0;
+  text-align: right;
+}
+.price-table td:last-child {
+  color: var(--accent-text);
+  font-weight: 500;
+}
+
+.pricing-example {
+  max-width: 48em;
+  margin-top: 32px;
+  font: 400 13px/1.6 var(--font-mono);
+  color: var(--muted);
+  text-wrap: pretty;
+}
+.pricing-example a,
+.build-copy a {
+  color: var(--fg);
+  text-decoration: underline;
+  text-decoration-color: var(--frame);
+  text-underline-offset: 3px;
+}
+
 /* ── what you need ───────────────────────────────── */
 
 .needs {
+  scroll-margin-top: 24px;
   width: min(1160px, 100% - 48px);
   margin-inline: auto;
   padding-bottom: 128px;
 }
 
-/* one framed cell each: the logo, then what of it you need */
+/* one framed cell each: the name or logo, then what of it you need */
 .needs-list {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -803,7 +933,7 @@ h2 {
   color: var(--muted);
 }
 
-/* every logo on the same 28px line */
+/* every name on the same 28px line */
 .needs-logo {
   display: inline-flex;
   align-items: center;
@@ -820,45 +950,92 @@ h2 {
 a.needs-logo:hover {
   color: var(--accent-text);
 }
-/* the T3 mark at the word's cap height, Boat's wordmark at its own */
+/* the T3 mark at the word's cap height */
 .needs-t3 {
   height: 21px;
 }
-.needs-boat {
-  height: 28px;
-}
 .needs-os {
-  gap: 18px;
+  gap: 12px;
 }
 .needs-os svg {
   height: 26px;
+  translate: 0 -2px;
 }
 
-/* on the page, not the sky: the ocean button in both themes */
-.needs .install {
-  --install-bg: var(--ocean);
-  --install-hover: var(--blue-500);
-  --install-fg: #fff;
+/* building it: the agent's prompt, or the commands */
+.build {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  align-items: center;
+  gap: 32px 48px;
+  margin-top: 64px;
+}
+.build-copy h3 {
+  margin: 0;
+  font: 500 28px/1.1 var(--font-display);
+  letter-spacing: -0.02em;
+}
+.build-copy p {
+  max-width: 30em;
+  margin-top: 12px;
+  color: var(--muted);
+  text-wrap: pretty;
+}
+/* on the page, not the sky: the page's own shadow */
+.build .install {
   --install-shadow: 4px 4px 0 var(--shadow);
-  margin-top: 40px;
+}
+.build-code {
+  min-width: 0;
+  margin: 0;
+  padding: 20px 22px;
+  overflow-x: auto;
+  border: 1px solid var(--frame);
+  background: var(--panel);
+  box-shadow: 8px 8px 0 var(--shadow);
+  font: 400 13px/1.7 var(--font-mono);
+  color: var(--fg);
 }
 
 @media (max-width: 900px) {
+  .pricing,
   .needs {
     padding-bottom: 88px;
   }
-  .needs-list {
+  .pricing-grid,
+  .needs-list,
+  .build {
     grid-template-columns: minmax(0, 1fr);
     gap: 20px;
   }
   .needs-list li {
     gap: 24px;
   }
+  .build {
+    margin-top: 48px;
+    gap: 28px;
+  }
+}
+@media (max-width: 479px) {
+  .price-card {
+    padding: 20px 18px 22px;
+  }
+  .price-table {
+    font-size: 12px;
+  }
+  .price-table th,
+  .price-table td {
+    padding-right: 8px;
+  }
+  .build-code {
+    padding: 16px;
+    font-size: 12px;
+  }
 }
 
 /* ── footer ────────────────────────────────────────── */
 
-/* the mark again, the products it joins as their own logos, then the fine print */
+/* the mark again, the products it joins, then the fine print and the credit */
 .footer {
   width: min(1160px, 100% - 48px);
   margin-inline: auto;
@@ -890,7 +1067,7 @@ a.needs-logo:hover {
   font: 600 16px/1 var(--font-display);
   letter-spacing: -0.02em;
 }
-/* lit up like the sea's tags on hover */
+/* lit up like the roof's tags on hover */
 .footer-links a {
   display: inline-flex;
   align-items: center;
@@ -909,13 +1086,9 @@ a.needs-logo:hover {
   width: auto;
   height: 14px;
 }
-/* the T3 mark at the word's cap height; Boat's wordmark at the text's size, its baseline on the text's (centring alone sits it 1.7px low) */
+/* the T3 mark at the word's cap height */
 .footer-links .footer-t3 {
   height: 11px;
-}
-.footer-links .footer-boat {
-  height: 16px;
-  translate: 0 -1.7px;
 }
 
 .footer-fine {

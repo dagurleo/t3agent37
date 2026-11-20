@@ -1,9 +1,9 @@
 {
-  "name": "t3boat",
+  "name": "t3agent37",
   "private": true,
   "workspaces": ["apps/*"],
   "scripts": {
-    "dev": "bun --filter @t3boat/web dev",
-    "build": "bun --filter '*' build"
+    "dev": "bun --filter @t3agent37/web dev",
+    "build": "bun --filter @t3agent37/web build"
   }
 }

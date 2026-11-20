@@ -107,8 +107,8 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 
 **Loose ends:**
 - **Where the code lives:** `origin` is [dagurleo/t3agent37](https://github.com/dagurleo/t3agent37) (private), `main`; the local branch is `t3agent37`, tracking it. `upstream` is t3boat. `8992f61` is the last commit with the Tauri panel. The T3 Code scratch folder above this repo has the same `origin` but its own old history (one commit, a gitlink to this folder): don't pull or push there.
-- **`apps/web` is t3boat's marketing site, kept as the baseline for t3agent37's.** It doesn't build: it imports the React panel (`@t3boat/desktop`: its components, pixel engine and mock), which left with Tauri. That code is in `8992f61` (`apps/desktop/src`). Because `apps/web` needs that workspace package, `bun install` at the root fails until the site is redone.
-- **Package names are still `t3boat` / `@t3boat/*`** in the root and `apps/web` `package.json`. The app itself is t3agent37 everywhere else (bundle id `dev.t3agent37.app`).
+- **The site (`apps/web`) has no domain yet.** `SITE` in `apps/web/src/links.ts` is a placeholder (`https://t3agent37.example`); the canonical and share-card URLs, `llms.txt` and the launch video's end card all read it. Set it there once the domain is decided. The site links to `dagurleo/t3agent37`, which is private for now, so its GitHub links and the install prompt only work for people with access.
+- **The site's launch video (`launch.html`, `scripts/launch.ts`) is restyled but not filmed yet.** Its page renders with the rooftop; `bun run launch` (dev server running) films it.
 - **GitHub sign-in copies its device code to the clipboard.** Copying anything else afterwards loses it. Showing the code in the panel would be better.
 - **T3 Connect's "require approval for new devices" option** is not turned on by the app.
 - **The panel has no scrollbars.** Its views scroll, but no bar shows.
@@ -185,8 +185,26 @@ apps/desktop/                 the app: one Rust package (library = the backend, 
   icons/                      tray.png, tray@2x.png (menu-bar template), app-icon.png, icon.icns
   scripts/                    bundle-macos.sh, make_icons.py
   docs/                       architecture, T3 protocol spec
-apps/web/                     t3boat's site, the baseline for t3agent37's (see Loose ends)
+apps/web/                     the marketing site (React 19 + Vite, prerendered): see "The site" below
+  src/panel/                  the React port of the panel, restored from 8992f61, on its mock backend only
 ```
+
+### The site
+
+`apps/web` is t3agent37's marketing site, `@t3agent37/web` in the bun workspace (the root package is `t3agent37`). It runs on mock data only: no account, key or machine.
+
+```sh
+bun install                 # at the repo root
+bun run dev                 # at the root or in apps/web: the dev server, http://localhost:5173
+cd apps/web && bun run build   # tsc, vite, the SSR build, then scripts/prerender.ts → dist/
+bun run preview             # in apps/web: serves dist/
+```
+
+- **The panel's code is copied in, not shared.** `src/panel` is the React panel from `8992f61` (components, pixel engine, `mock.ts`), with the Tauri bridge taken out of `api.ts`. The app's real panel is GPUI now; the React port looks the same, so the site's demo (`demo.html`, iframed by `Together.tsx`) stands in for it. If the GPUI panel's look changes, port the change here by hand.
+- **One change to the engine:** `pixel/scene.ts` takes a `Frame` besides a zoom, so the hero can put the horizon under its copy, keep the sky plain behind it, thin the stars and keep clouds below the text. With a zoom it draws exactly what the panel drew.
+- **The prerender** writes `index.md`, `llms.txt`, `llms-full.txt` and `vercel.json`'s routes (the markdown twin for agents). Commit `vercel.json` when it changes.
+- **The share card:** `bun run og` (dev server running, ffmpeg with libx264) redraws `public/og.png` and `og.mp4` from the hero.
+- **No analytics.** t3boat's OpenPanel tracking was removed with the fork.
 
 ### Adding a panel command
 

@@ -1,25 +1,25 @@
-// Under the hood: T3 Code talks only to t3boat on the laptop, which fans out to the machines on
-// Boat. T3 Code sees every machine online; behind t3boat most sleep. Messages keep coming for
-// random sleeping machines: each lands on t3boat, which holds it, wakes that machine, then hands
+// Under the hood: T3 Code talks only to t3agent37 on the laptop, which fans out to the machines on
+// Agent37 Cloud. T3 Code sees every machine online; behind t3agent37 most sleep. Messages keep coming
+// for random sleeping machines: each lands on t3agent37, which holds it, wakes that machine, then hands
 // it over; the agent works a while, then the machine dozes off. Work runs long or short, so one
 // machine may still be busy while the next is woken, and now and then a message goes to a busy
-// machine, straight through t3boat. Wires and packets are drawn over the laid-out page,
+// machine, straight through t3agent37. Wires and packets are drawn over the laid-out page,
 // measured, so the same picture works across or down the screen.
 import { useLayoutEffect, useRef, useState } from "react";
-import icon from "@t3boat/desktop/icon.png";
-import { BoatIcon } from "@t3boat/desktop/components/BoatIcon";
-import { useAnimation } from "@t3boat/desktop/pixel/clock";
-import { seedOf, stateTag } from "@t3boat/desktop/machine";
-import type { MachineState } from "@t3boat/desktop/types";
-import { BoatLogo, T3CodeMark } from "./logos";
+import icon from "./assets/icon.png";
+import { SpyIcon } from "./panel/components/SpyIcon";
+import { useAnimation } from "./panel/pixel/clock";
+import { seedOf, stateTag } from "./panel/machine";
+import type { MachineState } from "./panel/types";
+import { T3CodeMark } from "./logos";
 
-const MACHINES = ["devbox", "beebox", "toybox", "jukebox"] as const;
+const MACHINES = ["raven", "falcon", "kestrel", "lynx"] as const;
 type Name = (typeof MACHINES)[number];
-/** A wire: T3 Code to t3boat, or t3boat to a machine. */
+/** A wire: T3 Code to t3agent37, or t3agent37 to a machine. */
 type Link = "t3" | Name;
 
 /**
- * A message for a sleeping machine, from second `at`: it reaches t3boat, which holds it, wakes
+ * A message for a sleeping machine, from second `at`: it reaches t3agent37, which holds it, wakes
  * the machine, then passes it on; the agent works for `work` seconds, then the machine dozes off.
  */
 interface Job {
@@ -29,7 +29,7 @@ interface Job {
   work: number;
 }
 
-/** A message for a machine already working: t3boat passes it straight on, no waking. */
+/** A message for a machine already working: t3agent37 passes it straight on, no waking. */
 interface Nudge {
   kind: "nudge";
   name: Name;
@@ -44,13 +44,13 @@ const PASSES = 5.7;
 const WORKS = 6.9;
 const IDLE = 3;
 const DOZE = 3;
-/** A nudge: to t3boat, then straight on to the machine. */
+/** A nudge: to t3agent37, then straight on to the machine. */
 const NUDGED = 2 * LANDS;
 /** How often a message goes to a machine already working, when one is. */
 const NUDGE_ODDS = 0.4;
 
 const endOf = (m: Message) => (m.kind === "job" ? m.at + WORKS + m.work + IDLE + DOZE : m.at + NUDGED);
-/** Until t3boat is free again: the next message comes no sooner. */
+/** Until t3agent37 is free again: the next message comes no sooner. */
 const hubBusy = (m: Message) => (m.kind === "job" ? WORKS : NUDGED);
 const between = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
 const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
@@ -91,7 +91,7 @@ function stateIn(j: Job, s: number): MachineState {
   return "sleeping";
 }
 
-/** What shows at second `s`: each machine's state, t3boat's label, and whether it holds a message. */
+/** What shows at second `s`: each machine's state, t3agent37's label, and whether it holds a message. */
 interface Scene {
   states: Record<Name, MachineState>;
   doing: string;
@@ -146,7 +146,7 @@ function packetsOf(j: Message): Packet[] {
 
 /** For reduced motion: one machine working, nothing moving. */
 const STILL: Scene = {
-  states: { devbox: "working", beebox: "asleep", toybox: "asleep", jukebox: "asleep" },
+  states: { raven: "working", falcon: "asleep", kestrel: "asleep", lynx: "asleep" },
   doing: "",
   held: false,
 };
@@ -206,7 +206,7 @@ export function Relay() {
   const t3 = useRef<HTMLDivElement>(null);
   const hub = useRef<HTMLImageElement>(null);
   const cloud = useRef<HTMLDivElement>(null);
-  const boats = useRef(new Map<Name, HTMLElement>());
+  const agents = useRef(new Map<Name, HTMLElement>());
   const packets = useRef<SVGGElement>(null);
   const [paths, setPaths] = useState<Partial<Record<Link, Point[]>>>({});
   const [scene, setScene] = useState(STILL);
@@ -223,13 +223,13 @@ export function Relay() {
         const r = n.getBoundingClientRect();
         return new DOMRect(r.left - o.left, r.top - o.top, r.width, r.height);
       };
-      // t3boat's wires leave from its icon across to the machines, or from under its label down to them
+      // t3agent37's wires leave from its icon across to the machines, or from under its label down to them
       const icon = rel(hub.current!);
       const whole = rel(hub.current!.parentElement!);
       const region = rel(cloud.current!);
       const across = region.left >= whole.right;
-      const rows = new Map(MACHINES.map((m) => [m, rel(boats.current.get(m)!)]));
-      // the line through t3boat runs level with the machine row nearest its middle, if one faces it
+      const rows = new Map(MACHINES.map((m) => [m, rel(agents.current.get(m)!)]));
+      // the line through t3agent37 runs level with the machine row nearest its middle, if one faces it
       const middle = icon.top + icon.height / 2;
       const facing = [...rows.values()]
         .map((r) => r.top + r.height / 2)
@@ -317,7 +317,7 @@ export function Relay() {
           <div className="relay-hub">
             <img ref={hub} src={icon} alt="" width={56} height={56} />
             <span className="relay-held" data-on={held || undefined} />
-            <span className="relay-name">t3boat</span>
+            <span className="relay-name">t3agent37</span>
             <span key={doing} className="relay-doing" data-on={doing ? "" : undefined}>
               {doing}
             </span>
@@ -325,19 +325,17 @@ export function Relay() {
         </div>
 
         <div ref={cloud} className="relay-cloud">
-          <span className="relay-where">
-            <BoatLogo role="img" aria-label="Boat" />
-          </span>
+          <span className="relay-where">Agent37 Cloud</span>
           <ul>
             {MACHINES.map((m) => (
               <li
                 key={m}
                 ref={(el) => {
-                  if (el) boats.current.set(m, el);
+                  if (el) agents.current.set(m, el);
                 }}
                 data-state={state(m)}
               >
-                <BoatIcon state={state(m)} seed={seedOf(m)} />
+                <SpyIcon state={state(m)} seed={seedOf(m)} />
                 <span className="relay-vm-name">{m}</span>
                 <span className="relay-tag">{stateTag(state(m))}</span>
               </li>

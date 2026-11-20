@@ -14,7 +14,8 @@ const OUT = resolve(process.argv[2] ?? "launch.mp4");
 const FPS = 30;
 const DT = 1000 / FPS;
 
-const browser = await chromium.launch({ channel: "chrome" });
+// Google Chrome if installed, else playwright's own Chromium (`bunx playwright-core install chromium`)
+const browser = await chromium.launch({ channel: "chrome" }).catch(() => chromium.launch());
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1.5, colorScheme: "light" });
 page.on("pageerror", (e) => console.error("page:", e.message));
 // paused: only runFor moves time, so slow screenshots don't leak real time into the film
@@ -189,9 +190,9 @@ const TO_SLEEP = 3000 + 1800 + 300;
 // ── the timeline ──────────────────────────────────────
 await hold(3);
 
-// the menu bar and t3boat's popover: the machine
+// the menu bar and t3agent37's panel: the machine
 await scene("desk");
-await say({ look: "t3boat", text: "Create a machine from the menu bar." });
+await say({ look: "t3agent37", text: "Create a machine from the menu bar." });
 await go(1.4, { cam: framing(POPOVER) });
 await click(spot(popover, "button:has-text('New machine')", 0.45, 0.6));
 await hold(0.8);
@@ -200,13 +201,13 @@ await hold(0.6);
 await click(spot(popover, "button:has-text('Launch machine')", 0.5, 0.6));
 const launched = clockMs;
 await go(0.8, { cursor: AWAY });
-await say({ look: "t3boat", text: "It's ready in about a minute.", fast: true });
+await say({ look: "t3agent37", text: "It's ready in about a minute.", fast: true });
 await point(status);
 await until(launched + ADDING + 300, 2.2);
-await say({ look: "t3boat", text: "t3boat adds it to T3 Code for you." });
+await say({ look: "t3agent37", text: "t3agent37 adds it to T3 Code for you." });
 await until(launched + CREATED + 300, 2.2);
 await hold(2);
-await say({ look: "t3boat", text: "Until you use it, it sleeps. Asleep, it costs nothing.", fast: true });
+await say({ look: "t3agent37", text: "Until you use it, it sleeps. Asleep, it bills only its disk.", fast: true });
 const unused = clockMs;
 await page.evaluate(() => void window.launch!.later());
 await until(unused + TO_SLEEP, 1.6);
@@ -231,7 +232,7 @@ await hold(0.8);
 await say({ look: "T3 Code", text: "Then chat as usual." });
 await click(spot(t3, 'button[type="submit"]'));
 const sent = clockMs;
-await say({ look: "t3boat", text: "Your message wakes the machine. That takes seconds." });
+await say({ look: "t3agent37", text: "Your message wakes the machine. That takes seconds." });
 await go(1.2, { cam: FULL, cursor: AWAY });
 await point(status);
 await until(sent + WAKE_MS);
@@ -241,13 +242,13 @@ await say({ look: "T3 Code", text: "The agent works on the machine, laptop lid o
 await point(newest);
 await until(sent + WAKE_MS + WORK_MS);
 await hold(1.6);
-await say({ look: "t3boat", text: "Done. If the machine is idle for a bit, it goes back to sleep.", fast: true });
+await say({ look: "t3agent37", text: "Done. If the machine is idle for a bit, it goes back to sleep.", fast: true });
 await point(status);
 await hold(1.2);
 const later = clockMs;
 await page.evaluate(() => void window.launch!.later());
 await until(later + TO_SLEEP);
-await say({ look: "t3boat", text: "Asleep, it costs nothing until your next message." });
+await say({ look: "t3agent37", text: "Asleep, it bills only its disk until your next message." });
 await hold(2.6);
 
 await point(null);
