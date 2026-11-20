@@ -21,7 +21,11 @@ impl MachineRuntime {
     /// environments off in T3 Code.
     pub async fn ensure_linked(&self) -> Result<()> {
         let t3 = &self.shared.t3;
-        if !t3.links_enabled() {
+        // The dev driver can leave the desktop app's links alone (T3AGENT37_NO_LINK).
+        if !t3.links_enabled() || std::env::var_os("T3AGENT37_NO_LINK").is_some() {
+            return Ok(());
+        }
+        if !self.up_for_background() {
             return Ok(());
         }
         let record = self.record();
@@ -46,7 +50,7 @@ impl MachineRuntime {
             .http
             .post(format!("{}/api/auth/pairing-token", self.upstream_url()))
             .bearer_auth(self.upstream_token())
-            .json(&json!({"label": "t3boat link", "scopes": SCOPES}))
+            .json(&json!({"label": "t3agent37 link", "scopes": SCOPES}))
             .timeout(Duration::from_secs(10))
             .send()
             .await?

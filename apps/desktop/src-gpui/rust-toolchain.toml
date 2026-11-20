@@ -1,0 +1,3 @@
+# GPUI's current snapshot (gpui-pre 0.3.12) uses std APIs newer than Rust 1.96.
+[toolchain]
+channel = "1.99"

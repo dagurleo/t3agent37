@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    t3boat_lib::run()
+    t3agent37_lib::run()
 }

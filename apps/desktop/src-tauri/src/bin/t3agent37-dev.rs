@@ -1,26 +1,31 @@
 //! Headless driver for development: runs the app model and proxies without the tray.
 //! Reads commands from stdin: list | create <name> [size] | pair <id> | wake <id> | sleep <id> |
-//! keep <id> [minutes] (keep awake; none: until stopped, 0 ends it) | connect <id> | delete <id> | costs
+//! keep <id> [minutes] (keep awake; none: until stopped, 0 ends it) | connect <id> | delete <id> | costs |
+//! code <id> (a pairing URL, T3 Code left alone) | state <id> | github <id> (sign its git in to GitHub)
 
 use std::sync::Arc;
-use t3boat_lib::app::{self, App, Setup};
-use t3boat_lib::machine::Event;
+use t3agent37_lib::app::{self, App, Setup};
+use t3agent37_lib::machine::Event;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info,t3boat_lib=debug".into()))
+        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info,t3agent37_lib=debug".into()))
         .init();
-    let (setup, boat, t3) = app::check_setup().await;
+    let dir = std::env::var("T3AGENT37_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| dirs::data_dir().unwrap().join("t3agent37-dev"));
+    // The key is read from `<dir>/agent37-key`; T3AGENT37_KEY_FILE checks and saves one there.
+    if let Ok(file) = std::env::var("T3AGENT37_KEY_FILE") {
+        t3agent37_lib::agent37::Agent37::save(&dir, &std::fs::read_to_string(file)?).await?;
+    }
+    let (setup, a37, t3) = app::check_setup(&dir).await;
     if setup != Setup::Ready {
         anyhow::bail!("setup incomplete: {setup:?}");
     }
-    let dir = std::env::var("T3BOAT_DATA_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| dirs::data_dir().unwrap().join("t3boat-dev"));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let app = App::new(boat.unwrap(), t3.unwrap(), dir, tx)?;
+    let app = App::new(a37.unwrap(), t3.unwrap(), dir, tx)?;
     let saver = app.clone();
     tokio::spawn(async move {
         while let Some(ev) = rx.recv().await {
@@ -59,10 +64,20 @@ async fn command(app: &Arc<App>, words: &[String]) -> anyhow::Result<()> {
             println!("CREATED {} on port {}", m.id(), m.record().local_port);
         }
         Some("pair") => app.pair(&*app.machine(&arg(1))?)?,
+        // A pairing URL for the machine's proxy, without opening T3 Code.
+        Some("code") => {
+            let m = app.machine(&arg(1))?;
+            println!("PAIRING http://localhost:{}/pair#token={}", m.record().local_port, m.auth.new_pairing_code());
+        }
+        Some("state") => {
+            let m = app.machine(&arg(1))?;
+            println!("POWER {:?} WATCHDOG {:?}", m.power(), m.watchdog_status().map(|w| (w.phase, w.busy, w.idle_secs)));
+        }
         Some("upgrade") => app.machine(&arg(1))?.upgrade_if_needed().await?,
         Some("wake") => app.machine(&arg(1))?.ensure_awake().await?,
         Some("sleep") => app.machine(&arg(1))?.sleep_now().await?,
         Some("connect") => app.machine(&arg(1))?.turn_on_connect().await?,
+        Some("github") => app.machine(&arg(1))?.sign_in_github().await?,
         Some("keep") => app.machine(&arg(1))?.keep_awake(words.get(2).map(|m| m.parse()).transpose()?).await?,
         Some("delete") => app.delete_machine(&*app.machine(&arg(1))?, arg(2) == "discard").await?,
         Some("costs") => {

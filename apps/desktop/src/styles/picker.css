@@ -53,7 +53,7 @@
   height: 180px;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: var(--blue-200) transparent;
+  scrollbar-color: var(--tone-200) transparent;
 }
 .pick-option {
   display: flex;

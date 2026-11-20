@@ -4,6 +4,7 @@ import { AgentName, AgentNames } from "./AgentLogos";
 import { Icon } from "./Icons";
 import { Dots } from "./common";
 import { SubHeader } from "./SubHeader";
+import { money } from "../machine";
 
 const CLIENTS: { id: McpClient; name: string }[] = [
   { id: "claudeCode", name: "Claude Code" },
@@ -24,10 +25,7 @@ export function SettingsView({ state, onSave, onAddMcp, onQuit, onBack }: Props)
   const [s, setS] = useState(state.settings);
   useEffect(() => setS(state.settings), [state.settings]);
 
-  // hidden by default so screen recordings don't leak the email
-  const [showEmail, setShowEmail] = useState(false);
-  const email = state.account?.identifier;
-  const plan = state.account?.plan;
+  const account = state.account;
 
   const [adding, setAdding] = useState<McpClient | null>(null);
   const add = (client: McpClient) => {
@@ -62,7 +60,7 @@ export function SettingsView({ state, onSave, onAddMcp, onQuit, onBack }: Props)
         <div className="setting">
           <span className="caption">mcp</span>
           <span className="setting-name">
-            Let <AgentNames names={CLIENTS.map((c) => c.name)} /> control t3boat
+            Let <AgentNames names={CLIENTS.map((c) => c.name)} /> control t3agent37
           </span>
           <div className="mcp-buttons">
             {CLIENTS.map((c) => {
@@ -107,17 +105,14 @@ export function SettingsView({ state, onSave, onAddMcp, onQuit, onBack }: Props)
         </div>
       </div>
       <div className="view-foot settings-foot">
-        <span className="setting-value" title="Boat account">
-          {email && (
-            <button className="account-email" onClick={() => setShowEmail((v) => !v)}>
-              {showEmail ? email : "Show email"}
-            </button>
-          )}
-          {email && plan && " · "}
-          {plan}
+        <span className="setting-value" title="Agent37 Cloud wallet">
+          {account &&
+            (account.pastDue
+              ? "Agent37 · past due: top up to wake machines"
+              : `Agent37 · ${money(account.balanceUsd)} left · ${account.memoryLimitGb} GB can run at once`)}
         </span>
         <button className="btn btn-sm btn-quiet" onClick={onQuit}>
-          Quit t3boat
+          Quit t3agent37
         </button>
       </div>
     </div>

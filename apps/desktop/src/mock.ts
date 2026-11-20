@@ -1,5 +1,5 @@
 // Browser-only stand-in for the Tauri backend so `bun run dev` works without Tauri.
-// URL params shape the starting state: ?setup=installBoat|signInBoat|installT3|starting
+// URL params shape the starting state: ?setup=connectAgent37|installT3|starting
 // ?machines=0|many|<count>  ?busy=1  ?mcp=mixed (Claude Code added, Codex not installed)
 // ?projects=0|error (T3 Code has no projects with a remote / listing them fails)
 // ?ready=1 (a new machine comes up in T3 Code with its agents signed in and acme on it, as the website shows it)
@@ -46,7 +46,7 @@ const keptAwake = (endsAt: number) => ({
 
 const seedMachines: MachineView[] = [
   // first: asleep until its T3 Code sends a turn
-  machine({ id: "sb_e4d1", name: "devbox", size: "default", state: "asleep", detail: "Asleep · free", paired: true, projects: [onMachine("acme", "github.com/you/acme")] }),
+  machine({ id: "sb_e4d1", name: "devbox", size: "default", state: "asleep", detail: "Asleep · disk only", paired: true, projects: [onMachine("acme", "github.com/you/acme")] }),
   machine({
     id: "sb_7f2a",
     name: "t3-main",
@@ -71,7 +71,7 @@ const seedMachines: MachineView[] = [
 const manyExtra: MachineView[] = [
   machine({ id: "sb_aa01", name: "docs-site", size: "small", state: "waking", detail: "Waking up…", paired: true }),
   machine({ id: "sb_aa02", name: "infra", size: "default", state: "error", detail: "Couldn't reach machine", paired: true }),
-  machine({ id: "sb_aa03", name: "old-spike", size: "small", state: "missing", detail: "Deleted on Boat", paired: true }),
+  machine({ id: "sb_aa03", name: "old-spike", size: "small", state: "missing", detail: "Deleted on Agent37", paired: true }),
   machine({ id: "", name: "new-api", size: "default", state: "creating", detail: "Installing T3 server…", paired: false }),
 ];
 
@@ -102,16 +102,18 @@ function seed(): UiState {
   return {
     setup: (params.get("setup") as Setup | null) ?? "ready",
     setupBusy: params.get("busy") === "1",
-    signInCode: params.get("busy") === "1" && params.get("setup") === "signInBoat" ? "XM22-RFXJ" : null,
-    account: { identifier: "you@example.com", plan: "Pro" },
+    signInCode: null,
+    account: { balanceUsd: 18.4, memoryLimitGb: 48, pastDue: false },
     machines: structuredClone(machines),
-    costs: { today: 0.42, month: 12.8, startsToday: 3, startsLimit: 50 },
+    costs: { today: 0.42, month: 12.8, balance: 18.4 },
     settings: { startAtLogin: true },
     mcp: params.get("mcp") === "mixed" ? { claudeCode: true, codex: null } : { claudeCode: false, codex: false },
     sizes: [
-      { id: "small", spec: "2 vCPU · 4 GB", hourly: 0.018 },
-      { id: "default", spec: "4 vCPU · 8 GB", hourly: 0.036 },
-      { id: "large", spec: "8 vCPU · 16 GB", hourly: 0.072 },
+      { id: "small", spec: "2 vCPU · 4 GB", hourly: 0.0151 },
+      { id: "default", spec: "4 vCPU · 8 GB", hourly: 0.0301 },
+      { id: "large", spec: "4 vCPU · 16 GB", hourly: 0.0493 },
+      { id: "xlarge", spec: "4 vCPU · 32 GB", hourly: 0.0877 },
+      { id: "huge", spec: "8 vCPU · 64 GB", hourly: 0.1753 },
     ],
   };
 }
@@ -126,7 +128,7 @@ export interface MockBackend extends Backend {
    */
   turn(id: string, stage: "wake" | "work" | "done"): void;
   /**
-   * Time flies for an idle machine: its countdown runs out within `ms`, the sea a time lapse
+   * Time flies for an idle machine: its countdown runs out within `ms`, the rooftop a time lapse
    * meanwhile, then it goes to sleep.
    */
   later(id: string, ms: number): Promise<void>;
@@ -154,23 +156,23 @@ function create(): MockBackend {
     return m;
   };
 
-  const setupOrder: Setup[] = ["installBoat", "signInBoat", "installT3", "ready"];
+  const setupOrder: Setup[] = ["connectAgent37", "installT3", "ready"];
 
   const handlers: { [C in CommandName]: (a: CommandArgs<C>) => Promise<unknown> } = {
     get_state: async () => structuredClone(state),
 
     async create_machine({ name, size, projects }) {
       if (state.machines.some((m) => m.name === name)) throw `a machine called "${name}" already exists`;
-      const row = machine({ id: "", name, size, state: "creating", detail: "Creating sandbox…", paired: false });
+      const row = machine({ id: "", name, size, state: "creating", detail: "Creating the VM on Agent37…", paired: false });
       state.machines = [...state.machines, row];
       emit();
-      const steps = ["Creating sandbox…", "Installing T3 server…", "Starting T3 server…", "Asking T3 Code to add it…"];
+      const steps = ["Creating the VM on Agent37…", "Installing T3 Code…", "Starting T3 server…", "Asking T3 Code to add it…"];
       for (const step of steps) {
         state.machines = state.machines.map((m) => (m.name === name ? { ...m, detail: step } : m));
         emit();
         await wait(1800);
       }
-      const id = `sb_${Math.random().toString(16).slice(2, 6)}`;
+      const id = Math.random().toString(36).slice(2, 12).padEnd(10, "0");
       state.machines = state.machines.map((m) =>
         m.name === name
           ? {
@@ -184,7 +186,6 @@ function create(): MockBackend {
             }
           : m,
       );
-      state.costs.startsToday += 1;
       emit();
       for (const p of projects ?? []) await handlers.add_project({ id, projectId: p });
     },
@@ -216,7 +217,6 @@ function create(): MockBackend {
       patch(id, WAKING);
       await wait(2600);
       patch(id, { state: "idle", ...idle() });
-      state.costs.startsToday += 1;
       emit();
     },
 
@@ -225,7 +225,7 @@ function create(): MockBackend {
       patch(id, { state: "sleeping", detail: "Going to sleep…", countdown: null });
       await wait(1800);
       // A stop ends any keep-awake, as on a real machine.
-      patch(id, { state: "asleep", detail: "Asleep · free", keepAwakeUntil: null, keepAwakeForever: false });
+      patch(id, { state: "asleep", detail: "Asleep · disk only", keepAwakeUntil: null, keepAwakeForever: false });
     },
 
     async keep_awake({ id, minutes }) {
@@ -258,6 +258,12 @@ function create(): MockBackend {
       find(id);
       connectOn.add(id);
       emit(); // the details view refetches on every state event
+    },
+
+    async wake_link({ id, renew }) {
+      await wait(900);
+      find(id);
+      return `https://${renew ? "n3wl1nkn3wl1nkn3wl1n" : "w4k3l1nkw4k3l1nkw4k3"}.agent37.app`;
     },
 
     async sign_in_agent({ id, agent }) {
@@ -338,6 +344,16 @@ function create(): MockBackend {
       emit();
     },
 
+    async save_api_key({ key }) {
+      state.setupBusy = true;
+      emit();
+      await wait(1200);
+      state.setupBusy = false;
+      if (!key.startsWith("sk_live_")) throw "that isn't an Agent37 API key: they start with sk_live_";
+      state.setup = "installT3";
+      emit();
+    },
+
     async quit_app() {
       console.info("[mock] quit_app");
     },
@@ -357,7 +373,7 @@ function create(): MockBackend {
 
   if (state.setup === "starting") {
     setTimeout(() => {
-      state.setup = "installBoat";
+      state.setup = "connectAgent37";
       emit();
     }, 1500);
   }
@@ -372,7 +388,6 @@ function create(): MockBackend {
       return () => listeners.delete(cb);
     },
     turn(id, stage) {
-      if (stage === "wake") state.costs.startsToday += 1;
       patch(
         id,
         stage === "wake"

@@ -94,6 +94,6 @@
   color: var(--accent-text);
   text-decoration: underline;
   text-underline-offset: 3px;
-  text-decoration-color: var(--blue-300);
+  text-decoration-color: var(--tone-300);
   font-weight: 400;
 }

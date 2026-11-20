@@ -15,7 +15,7 @@ interface Props {
 export function NewMachine({ state, onNameChange, onCreate, onBack }: Props) {
   const taken = state.machines.map((m) => m.name);
   const [name, setName] = useState(() => suggestName(taken));
-  // Boat's own default: room for builds and tests without the large price.
+  // 4 vCPU · 8 GB: room for builds and tests without the large price.
   const [size, setSize] = useState(() => (state.sizes.some((s) => s.id === "default") ? "default" : (state.sizes[0]?.id ?? "")));
   const input = useRef<HTMLInputElement>(null);
   const projects = useLocalProjects();

@@ -1,77 +1,77 @@
-/* ── ocean strip ─────────────────────────────────────── */
+/* ── rooftop strip ────────────────────────────────────── */
 
-.ocean {
+.rooftop {
   position: relative;
   flex: none;
   width: 380px;
   height: 148px;
   overflow: hidden;
-  transition: height var(--ocean-ease);
+  transition: height var(--strip-ease);
 }
-.ocean.is-compact {
+.rooftop.is-compact {
   height: 100px;
 }
 /* sky overlays ride the sky: compact crops 48px off the top, so they slide out with it */
-.ocean .brand {
+.rooftop .brand {
   transition:
-    transform var(--ocean-ease),
-    visibility var(--ocean-ease);
+    transform var(--strip-ease),
+    visibility var(--strip-ease);
 }
-.ocean .btn-on-sea {
+.rooftop .btn-on-sky {
   transition:
-    transform var(--ocean-ease),
-    visibility var(--ocean-ease),
+    transform var(--strip-ease),
+    visibility var(--strip-ease),
     background-color 120ms ease,
     border-color 120ms ease;
 }
-.ocean.is-compact .brand,
-.ocean.is-compact .btn-on-sea {
+.rooftop.is-compact .brand,
+.rooftop.is-compact .btn-on-sky {
   transform: translateY(-48px);
   visibility: hidden;
 }
 
-/* scrolls sideways once the boats outgrow the zoomed-out sea */
-.ocean-scroll {
+/* scrolls sideways once the agents outgrow the zoomed-out city */
+.rooftop-scroll {
   position: absolute;
   inset: 0;
   overflow: hidden;
   overscroll-behavior-x: contain;
 }
-.ocean-scroll.is-scrolling {
+.rooftop-scroll.is-scrolling {
   overflow-x: auto;
 }
 /* a slim square bar on the page-coloured bottom edge, not the platform's chunky one */
-.ocean-scroll::-webkit-scrollbar {
+.rooftop-scroll::-webkit-scrollbar {
   height: 5px;
 }
-.ocean-scroll::-webkit-scrollbar-track {
+.rooftop-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
-.ocean-scroll::-webkit-scrollbar-thumb {
-  background: var(--blue-300);
+.rooftop-scroll::-webkit-scrollbar-thumb {
+  background: var(--tone-300);
 }
-.ocean-scroll::-webkit-scrollbar-thumb:hover {
-  background: var(--blue-200);
+.rooftop-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--tone-200);
 }
 /* the world hangs from the bottom so compact mode crops the sky */
-.ocean-world {
+.rooftop-world {
   position: absolute;
   left: 0;
   bottom: 0;
 }
-.ocean-canvas,
-.ocean-tags,
-.ocean-hits {
+.rooftop-canvas,
+.rooftop-tags,
+.rooftop-hits {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
 }
-.ocean-canvas {
+.rooftop-canvas {
   display: block;
   image-rendering: pixelated;
 }
-.ocean-tags {
+.rooftop-tags {
   pointer-events: none;
 }
 
@@ -100,7 +100,7 @@
 .tag.is-active {
   z-index: 1;
   background: var(--ink);
-  color: var(--wash);
+  color: var(--paper);
   letter-spacing: 0;
 }
 
@@ -120,18 +120,18 @@
   padding: 4px 6px;
   font: 600 21px/1 var(--font-display);
   letter-spacing: -0.02em;
-  background: rgb(6 10 30 / 0.28);
-  text-shadow: 1px 1px 0 rgb(6 10 30 / 0.6);
+  background: rgb(20 14 24 / 0.3);
+  text-shadow: 1px 1px 0 rgb(12 8 16 / 0.6);
 }
 
-.btn-on-sea {
+.btn-on-sky {
   position: absolute;
   top: 10px;
   right: 12px;
   color: #fff;
   border-color: rgb(255 255 255 / 0.45);
 }
-.btn-on-sea:hover {
+.btn-on-sky:hover {
   color: #fff;
   background: rgb(255 255 255 / 0.16);
 }

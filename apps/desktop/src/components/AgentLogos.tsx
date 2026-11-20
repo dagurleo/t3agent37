@@ -1,5 +1,5 @@
 // Coding agents' names, each led by its logo as if part of the word. Claude Code keeps its brand colour;
-// Codex takes the text colour. t3boat is not affiliated with either.
+// Codex takes the text colour. t3agent37 is not affiliated with either.
 import { Fragment, type ComponentType } from "react";
 
 function ClaudeCodeLogo() {

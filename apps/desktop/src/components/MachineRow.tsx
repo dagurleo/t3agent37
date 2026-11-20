@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MachineView, Size } from "../types";
 import { ACTIONS, machineKey, menuActions, needsProject, primaryAction, seedOf, signInTo, type Action, type MenuItem } from "../machine";
 import { AgentName, AgentNames } from "./AgentLogos";
-import { BoatIcon } from "./BoatIcon";
+import { SpyIcon } from "./SpyIcon";
 import { DeleteErrorNote, Dots, useArmed, useDetail } from "./common";
 import { Icon } from "./Icons";
 
@@ -56,7 +56,7 @@ export function MachineRow({
       onFocus={() => onHover(key)}
       onBlur={() => onHover(null)}
     >
-      <BoatIcon state={m.state} seed={seedOf(key)} />
+      <SpyIcon state={m.state} seed={seedOf(key)} />
       <div className="row-text">
         <div className="row-title">
           {onOpen ? (

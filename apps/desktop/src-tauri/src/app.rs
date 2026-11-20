@@ -1,7 +1,7 @@
 //! The app's model: machines, settings, setup checks. UI-agnostic; the tray and the dev CLI
 //! both drive it.
 
-use crate::boat::{Boat, Starts};
+use crate::agent37::Agent37;
 use crate::machine::{provision, Event, MachineRuntime, Power, Shared, WatchdogPhase};
 use crate::proxy;
 use crate::store::{Settings, Spend, State, Store};
@@ -11,11 +11,12 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-const FIRST_PORT: u16 = 47731;
+/// Clear of t3boat's ports (47731+): T3 Code may know a port from either app.
+const FIRST_PORT: u16 = 47371;
 /// Machines ever created here: deleted ones keep their port.
 const PORTS: u16 = 1000;
 
@@ -27,18 +28,16 @@ pub enum Setup {
     #[default]
     Starting,
     Ready,
-    InstallBoat,
-    SignInBoat,
+    /// No Agent37 API key on this computer yet.
+    ConnectAgent37,
     InstallT3,
 }
 
-pub async fn check_setup() -> (Setup, Option<Boat>, Option<T3Desktop>) {
-    let Some(boat) = Boat::locate() else { return (Setup::InstallBoat, None, None) };
-    if !boat.account().await.is_ok_and(|a| a.signed_in) {
-        return (Setup::SignInBoat, Some(boat), None);
-    }
-    let Some(t3) = T3Desktop::locate() else { return (Setup::InstallT3, Some(boat), None) };
-    (Setup::Ready, Some(boat), Some(t3))
+/// The key was checked with Agent37 when it was saved; a revoked one shows up as failing calls.
+pub async fn check_setup(data_dir: &std::path::Path) -> (Setup, Option<Agent37>, Option<T3Desktop>) {
+    let Some(a37) = Agent37::load(data_dir) else { return (Setup::ConnectAgent37, None, None) };
+    let Some(t3) = T3Desktop::locate() else { return (Setup::InstallT3, Some(a37), None) };
+    (Setup::Ready, Some(a37), Some(t3))
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq)]
@@ -112,8 +111,8 @@ pub struct MachineUsage {
 pub struct Costs {
     pub today: f64,
     pub month: f64,
-    pub starts_today: u64,
-    pub starts_limit: u64,
+    /// What is left in the Agent37 wallet, which every machine draws on.
+    pub balance: Option<f64>,
 }
 
 /// A machine being created: it holds its name and local port until it exists.
@@ -121,7 +120,7 @@ struct Creating {
     name: String,
     step: String,
     port: u16,
-    /// Its Boat sandbox, once there is one.
+    /// Its Agent37 instance, once there is one.
     sandbox: Option<String>,
 }
 
@@ -136,7 +135,7 @@ pub struct App {
     data_dir: PathBuf,
     machines: RwLock<Vec<Running>>,
     creating: Mutex<Vec<Creating>>,
-    starts: Mutex<Starts>,
+    balance: Mutex<Option<f64>>,
     /// By sandbox id, gone sandboxes included: `Spend`.
     spend: Mutex<HashMap<String, Spend>>,
     retired_ports: Mutex<Vec<u16>>,
@@ -146,13 +145,13 @@ pub struct App {
 
 impl App {
     pub fn new(
-        boat: Boat,
+        a37: Agent37,
         t3: T3Desktop,
         data_dir: PathBuf,
         events: mpsc::UnboundedSender<Event>,
     ) -> Result<Arc<Self>> {
         let store = Store::new(&data_dir);
-        let state = store.load().context("reading t3boat state")?;
+        let state = store.load().context("reading t3agent37 state")?;
         // A machine saved meanwhile owns its sandbox.
         let leftover: Vec<String> = state
             .pending_sandboxes
@@ -160,15 +159,11 @@ impl App {
             .filter(|s| !state.machines.iter().any(|m| &m.sandbox_id == s))
             .collect();
         let shared = Arc::new(Shared {
-            boat,
+            a37,
             t3: t3.with_token_file(data_dir.join("t3-token")),
             settings: RwLock::new(state.settings.clone()),
             events,
-            http: reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                // Boat answers an unrouted port with a redirect to its fallback page.
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?,
+            http: crate::agent37::EdgeClient::new()?,
         });
         let app = Arc::new(Self {
             shared,
@@ -176,7 +171,7 @@ impl App {
             data_dir,
             machines: RwLock::new(Vec::new()),
             creating: Mutex::new(Vec::new()),
-            starts: Mutex::new(Starts::default()),
+            balance: Mutex::new(None),
             spend: Mutex::new(state.spend),
             retired_ports: Mutex::new(state.retired_ports),
             leftover_sandboxes: Mutex::new(leftover),
@@ -195,15 +190,15 @@ impl App {
         }
     }
 
-    /// Unfinished, unlisted and billed without limit: deleted, or the user told. Kept until Boat
-    /// confirms it gone, so the next launch tries again.
+    /// Unfinished, unlisted and billed without limit: deleted, or the user told. Kept until
+    /// Agent37 confirms it gone, so the next launch tries again.
     async fn delete_leftover(&self, id: &str) {
-        let boat = &self.shared.boat;
-        if let Err(e) = boat.delete(id).await {
-            if !boat.confirmed_gone(id).await {
+        let a37 = &self.shared.a37;
+        if let Err(e) = a37.delete(id).await {
+            if !a37.confirmed_gone(id).await {
                 self.shared.notify(
-                    "A sandbox may be left on Boat",
-                    format!("Couldn't delete {id} from an unfinished create ({e:#}); delete it with `boat delete {id}`"),
+                    "A VM may be left on Agent37",
+                    format!("Couldn't delete {id} from an unfinished create ({e:#}); delete it in the Agent37 dashboard"),
                 );
                 return;
             }
@@ -229,7 +224,7 @@ impl App {
             if let Err(e) = proxy::serve(proxy_machine.clone()).await {
                 tracing::error!("proxy on port {port} failed: {e:#}");
                 proxy_machine.shared.notify(
-                    "t3boat",
+                    "t3agent37",
                     format!("{} cannot listen on port {port}: {e}", proxy_machine.record().name),
                 );
             }
@@ -302,7 +297,7 @@ impl App {
         Ok(port)
     }
 
-    /// Saved before provisioning starts: a quit or crash from here on leaves the sandbox billed.
+    /// Saved before provisioning starts: a quit or crash from here on leaves the VM billed.
     fn set_creating_sandbox(&self, name: &str, sandbox: &str) {
         if let Some(c) = self.creating.lock().unwrap().iter_mut().find(|c| c.name == name) {
             c.sandbox = Some(sandbox.to_owned());
@@ -327,7 +322,7 @@ impl App {
         let result = async {
             let version = self.shared.t3.version().await?;
             let record = provision::create(
-                &self.shared.boat,
+                &self.shared.a37,
                 name,
                 size,
                 &version,
@@ -336,6 +331,13 @@ impl App {
                 |step| self.set_creating_step(name, step),
             )
             .await?;
+            // Counted from the start: usage settles hourly, and a machine deleted before its first
+            // hour shows up only once it is gone.
+            let (day, _) = periods();
+            self.spend.lock().unwrap().insert(
+                record.sandbox_id.clone(),
+                Spend { machine: record.id.clone(), day, today: 0.0, awake_secs_today: 0, month: 0.0 },
+            );
             let machine = self.runtime(record);
             // Before pairing: T3 Code's onboarding needs the descriptor and session right away.
             // On failure the machine's loop primes it again.
@@ -346,7 +348,7 @@ impl App {
             Ok::<_, anyhow::Error>(machine)
         }
         .await;
-        // A failed create's sandbox becomes a leftover: deleted now, or retried at the next launch.
+        // A failed create's VM becomes a leftover: deleted now, or retried at the next launch.
         let leftover = {
             let mut creating = self.creating.lock().unwrap();
             let sandbox = creating.iter().position(|c| c.name == name).and_then(|i| creating.remove(i).sandbox);
@@ -367,7 +369,11 @@ impl App {
                 }
             }
         });
-        // The machine exists either way; its row still offers "Add to T3 Code".
+        // The machine exists either way; its row still offers "Add to T3 Code". The dev driver
+        // can leave T3 Code alone (T3AGENT37_NO_AUTOPAIR) and pair by hand.
+        if std::env::var_os("T3AGENT37_NO_AUTOPAIR").is_some() {
+            return Ok(machine);
+        }
         if let Err(e) = self.pair(&machine) {
             self.shared.notify(format!("Couldn't open T3 Code for {name}"), format!("{e:#}; use Add to T3 Code"));
         }
@@ -411,21 +417,17 @@ impl App {
     /// a backend from outside, so a paired machine ends with T3 Code in front and a note on what
     /// to remove there.
     pub async fn delete_machine(&self, machine: &MachineRuntime, discard: bool) -> Result<()> {
-        // Boat can't report a deleted sandbox's usage: the last chance to count its tail.
-        let (day, month) = periods();
-        self.refresh_spend(machine, day, month).await;
         if !discard {
             machine.check_idle_before_delete().await?;
         }
-        let boat = &self.shared.boat;
+        let a37 = &self.shared.a37;
         let record = {
-            // Held until retired: a later wake then sees Missing, and none restores meanwhile.
+            // Held until retired: a later wake then sees Missing.
             let _waking = machine.waking.lock().await;
-            // Read under the lock: a wake may have restored it onto a new sandbox.
             let record = machine.record();
-            if let Err(e) = boat.delete(&record.sandbox_id).await {
-                // Already gone on Boat is fine; anything else keeps the machine.
-                if !boat.confirmed_gone(&record.sandbox_id).await {
+            if let Err(e) = a37.delete(&record.sandbox_id).await {
+                // Already gone on Agent37 is fine; anything else keeps the machine.
+                if !a37.confirmed_gone(&record.sandbox_id).await {
                     return Err(e);
                 }
             }
@@ -433,10 +435,6 @@ impl App {
             record
         };
         let id = record.id.as_str();
-        // None yet if it never slept with this app's watchdog.
-        if let Err(e) = boat.delete_snapshot(&provision::snapshot_name(&record.name, &record.id)).await {
-            tracing::warn!("deleting {id}'s snapshot: {e:#}");
-        }
         let running = {
             let mut machines = self.machines.write().unwrap();
             let idx = machines.iter().position(|r| r.machine.id() == id);
@@ -482,13 +480,10 @@ impl App {
         views
     }
 
-    /// Totals count every sandbox spent on this month, those of deleted machines and those a
-    /// restore replaced included.
+    /// Totals count every instance spent on this month, those of deleted machines included.
     pub fn costs(&self) -> Costs {
         let (day, month) = periods();
-        let starts = self.starts.lock().unwrap().clone();
-        let mut costs =
-            Costs { starts_today: starts.used_today, starts_limit: starts.limit_today, ..Costs::default() };
+        let mut costs = Costs { balance: *self.balance.lock().unwrap(), ..Costs::default() };
         for spend in self.spend.lock().unwrap().values() {
             let u = usage(spend, day, month);
             costs.today += u.today;
@@ -510,37 +505,35 @@ impl App {
         total
     }
 
-    /// Looks up the spend of the machine's current sandbox. A failed lookup keeps the last known
+    /// Looks up this month's spend of every machine in one call: Agent37 reports the whole
+    /// workspace by instance and keeps deleted ones listed. A failed lookup keeps the last known
     /// figures, never a fake zero.
-    async fn refresh_spend(&self, machine: &MachineRuntime, day: i64, month: i64) {
-        if machine.power() == Power::Missing {
-            return;
-        }
-        let boat = &self.shared.boat;
-        let sandbox = machine.sandbox_id();
-        let Ok((today, this_month)) = tokio::try_join!(boat.usage_since(&sandbox, day), boat.usage_since(&sandbox, month))
-        else {
-            return;
-        };
-        let spend = Spend {
-            machine: machine.id(),
-            day,
-            today: today.dollars,
-            awake_secs_today: today.seconds,
-            month: this_month.dollars,
-        };
-        self.spend.lock().unwrap().insert(sandbox, spend);
-    }
-
     pub async fn refresh_costs(&self) {
+        use chrono::Datelike;
         let (day, month) = periods();
-        let boat = &self.shared.boat;
-        for m in self.machines() {
-            self.refresh_spend(&m, day, month).await;
+        let a37 = &self.shared.a37;
+        let today = chrono::Utc::now().date_naive();
+        let first = today.with_day(1).unwrap_or(today);
+        if let Ok((on_day, in_month)) = tokio::try_join!(a37.usage(today, today), a37.usage(first, today)) {
+            let machines: HashMap<String, String> =
+                self.machines().iter().map(|m| (m.sandbox_id(), m.id())).collect();
+            let mut spend = self.spend.lock().unwrap();
+            for (instance, used) in &in_month {
+                // Only this app's machines, live or deleted: the workspace may run other VMs.
+                let Some(machine) = machines.get(instance).cloned().or_else(|| spend.get(instance).map(|s| s.machine.clone()))
+                else {
+                    continue;
+                };
+                let today = on_day.get(instance).cloned().unwrap_or_default();
+                spend.insert(
+                    instance.clone(),
+                    Spend { machine, day, today: today.dollars, awake_secs_today: today.awake_minutes * 60, month: used.dollars },
+                );
+            }
+            spend.retain(|_, s| s.day >= month);
         }
-        self.spend.lock().unwrap().retain(|_, s| s.day >= month);
-        if let Ok(starts) = boat.starts().await {
-            *self.starts.lock().unwrap() = starts;
+        if let Ok(b) = a37.billing().await {
+            *self.balance.lock().unwrap() = Some(b.balance_usd);
         }
         self.shared.persist();
         self.shared.changed();
@@ -557,12 +550,12 @@ fn local_time(t: chrono::DateTime<chrono::Utc>) -> String {
     }
 }
 
-/// Starts of the current local day and month, unix seconds.
+/// Starts of the current day and month, unix seconds. In UTC: Agent37 reports spend by UTC day.
 fn periods() -> (i64, i64) {
-    use chrono::{Datelike, Local, TimeZone};
-    let now = Local::now();
+    use chrono::{Datelike, TimeZone, Utc};
+    let now = Utc::now();
     let start = |day| {
-        Local
+        Utc
             .with_ymd_and_hms(now.year(), now.month(), day, 0, 0, 0)
             .single()
             .map(|t| t.timestamp())
@@ -597,6 +590,9 @@ pub struct MachineDetails {
     pub connect: bool,
 }
 
+/// Its gh login shows as one more agent: what its git pushes and clones private repos with.
+pub const GITHUB: &str = "GitHub";
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentLogin {
@@ -622,6 +618,7 @@ impl App {
                 .into_iter()
                 .filter(|(_, status)| matches!(status.as_str(), "authenticated" | "unauthenticated"))
                 .map(|(name, status)| AgentLogin { name, signed_in: status == "authenticated" })
+                .chain(record.github_checked.then(|| AgentLogin { name: GITHUB.into(), signed_in: record.github_login.is_some() }))
                 .collect(),
             t3_version: record.t3_version,
             created_at: record.created_at,
@@ -655,7 +652,7 @@ fn view(m: &MachineRuntime) -> MachineView {
     };
     use MachineState::*;
     let (state, detail) = match (m.power(), &watchdog) {
-        (Power::Missing, _) => (Missing, "Deleted on Boat".to_owned()),
+        (Power::Missing, _) => (Missing, "Deleted on Agent37".to_owned()),
         (_, _) if m.last_error().is_some() => (Error, m.last_error().unwrap_or_default()),
         (Power::Running, Some(w)) if w.agents_unknown => (Working, "T3 not answering · stays up 30m max".to_owned()),
         (Power::Running, Some(w)) if w.cpu_busy => (Working, "Working · busy CPU".to_owned()),
@@ -679,7 +676,7 @@ fn view(m: &MachineRuntime) -> MachineView {
         (Power::Starting, _) => (Waking, "Waking up".to_owned()),
         (Power::Stopped, _) => match m.scheduled_wake() {
             Some(due) => (Asleep, format!("Asleep · wakes {} for scheduled work", local_time(due))),
-            None => (Asleep, "Asleep".to_owned()),
+            None => (Asleep, "Asleep · bills disk only".to_owned()),
         },
         (Power::Unknown, _) => (Unknown, "Checking".to_owned()),
     };
@@ -692,7 +689,13 @@ fn view(m: &MachineRuntime) -> MachineView {
         detail,
         countdown,
         paired: !r.client_tokens.is_empty(),
-        signed_out: m.cache.lock().unwrap().signed_out_providers(),
+        signed_out: {
+            let mut out = m.cache.lock().unwrap().signed_out_providers();
+            if r.github_checked && r.github_login.is_none() {
+                out.push(GITHUB.into());
+            }
+            out
+        },
         projects: m.projects(),
         keep_awake_until: running_watchdog
             .filter(|w| w.keep_awake_secs > 0)

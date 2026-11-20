@@ -2,7 +2,7 @@
 //! Contract with the UI: docs/ui-contract.md.
 
 use crate::app::{self, App, Costs, MachineState, MachineView, Setup};
-use crate::boat::Boat;
+use crate::agent37::Agent37;
 use crate::machine::provision::{SizeInfo, SIZES};
 use crate::machine::Event;
 use crate::mcp;
@@ -39,7 +39,7 @@ struct Ui {
     init_lock: tokio::sync::Mutex<()>,
 }
 
-/// Whether each coding agent CLI has t3boat's MCP server; `None`: that CLI is not installed.
+/// Whether each coding agent CLI has t3agent37's MCP server; `None`: that CLI is not installed.
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct McpStatus {
@@ -65,15 +65,17 @@ async fn refresh_mcp(handle: &AppHandle) {
 struct SetupState {
     setup: Setup,
     busy: bool,
-    /// The code Boat's sign-in page may ask for, while a sign-in is pending.
+    /// Unused since Agent37 takes an API key; kept for the UI contract.
     sign_in_code: Option<String>,
 }
 
+/// The Agent37 workspace's wallet, as last read.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Account {
-    identifier: Option<String>,
-    plan: Option<String>,
+    balance_usd: f64,
+    memory_limit_gb: u32,
+    past_due: bool,
 }
 
 
@@ -93,7 +95,7 @@ struct UiState {
 
 impl Ui {
     fn app(&self) -> Result<Arc<App>, String> {
-        self.app.lock().unwrap().clone().ok_or_else(|| "t3boat is not set up yet".to_owned())
+        self.app.lock().unwrap().clone().ok_or_else(|| "t3agent37 is not set up yet".to_owned())
     }
 
     fn state(&self) -> UiState {
@@ -128,29 +130,29 @@ fn update_tray(handle: &AppHandle, state: &UiState) {
         .filter(|m| matches!(m.state, MachineState::Idle | MachineState::Working | MachineState::Waking))
         .count();
     let tip = match (working, awake) {
-        (0, 0) => "t3boat · all machines asleep".to_owned(),
-        (0, n) => format!("t3boat · {n} awake"),
-        (w, _) => format!("t3boat · {w} working"),
+        (0, 0) => "t3agent37 · all machines asleep".to_owned(),
+        (0, n) => format!("t3agent37 · {n} awake"),
+        (w, _) => format!("t3agent37 · {w} working"),
     };
     let _ = tray.set_tooltip(Some(tip));
 }
 
-/// Checks the user's Boat and T3 Code installs; starts the app model once both are there.
+/// Checks for the Agent37 key and the T3 Code install; starts the app model once both are there.
 async fn init(handle: AppHandle) {
     let ui = handle.state::<Ui>();
     let _init = ui.init_lock.lock().await;
     if ui.app.lock().unwrap().is_some() {
         return;
     }
-    let (setup, boat, t3) = app::check_setup().await;
+    let data_dir = handle.path().app_data_dir().expect("app data dir");
+    let (setup, a37, t3) = app::check_setup(&data_dir).await;
     ui.setup.lock().unwrap().setup = setup;
-    if let Some(boat) = &boat {
-        refresh_account(&handle, boat).await;
+    if let Some(a37) = &a37 {
+        refresh_account(&handle, a37).await;
     }
-    if let (Setup::Ready, Some(boat), Some(t3)) = (setup, boat, t3) {
-        let data_dir = handle.path().app_data_dir().expect("app data dir");
+    if let (Setup::Ready, Some(a37), Some(t3)) = (setup, a37, t3) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        match App::new(boat, t3, data_dir, tx) {
+        match App::new(a37, t3, data_dir, tx) {
             Ok(app) => {
                 *ui.app.lock().unwrap() = Some(app.clone());
                 if let Err(e) = apply_autostart(&handle, app.settings().start_at_login) {
@@ -161,7 +163,7 @@ async fn init(handle: AppHandle) {
                 let mcp_handle = handle.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = mcp::serve(app).await {
-                        notify(&mcp_handle, "t3boat", &format!("Coding agents cannot reach t3boat: {e:#}"));
+                        notify(&mcp_handle, "t3agent37", &format!("Coding agents cannot reach t3agent37: {e:#}"));
                     }
                 });
                 tauri::async_runtime::spawn({
@@ -169,16 +171,17 @@ async fn init(handle: AppHandle) {
                     async move { refresh_mcp(&handle).await }
                 });
             }
-            Err(e) => notify(&handle, "t3boat could not start", &format!("{e:#}")),
+            Err(e) => notify(&handle, "t3agent37 could not start", &format!("{e:#}")),
         }
     }
     emit_state(&handle);
 }
 
-async fn refresh_account(handle: &AppHandle, boat: &Boat) {
+async fn refresh_account(handle: &AppHandle, a37: &Agent37) {
     let ui = handle.state::<Ui>();
-    if let Ok(a) = boat.account().await {
-        *ui.account.lock().unwrap() = Some(Account { identifier: a.identifier, plan: a.plan });
+    if let Ok(b) = a37.billing().await {
+        *ui.account.lock().unwrap() =
+            Some(Account { balance_usd: b.balance_usd, memory_limit_gb: b.memory_limit_gb, past_due: b.past_due });
     }
 }
 
@@ -196,7 +199,7 @@ async fn events(handle: AppHandle, app: Arc<App>, mut rx: tokio::sync::mpsc::Unb
 async fn background(handle: AppHandle, app: Arc<App>) {
     loop {
         app.refresh_costs().await;
-        refresh_account(&handle, &app.shared.boat).await;
+        refresh_account(&handle, &app.shared.a37).await;
         emit_state(&handle);
         tokio::time::sleep(COSTS_EVERY).await;
     }
@@ -247,7 +250,7 @@ fn place_under_tray(handle: &AppHandle, panel: &tauri::WebviewWindow, anchor: Op
     let anchor = anchor.or_else(|| {
         let cursor = handle.cursor_position().ok()?;
         // Linux trays don't say where their icon is; there the panel opens from the tray
-        // menu, so the cursor that just picked "Open t3boat" stands in for the icon.
+        // menu, so the cursor that just picked "Open t3agent37" stands in for the icon.
         let icon = handle.tray_by_id("main")?.rect().ok().flatten().unwrap_or(tauri::Rect {
             position: cursor.into(),
             size: tauri::PhysicalSize::new(0, 0).into(),
@@ -259,11 +262,11 @@ fn place_under_tray(handle: &AppHandle, panel: &tauri::WebviewWindow, anchor: Op
     }
 }
 
-/// Follows whether a tray can show t3boat's icon. Linux desktops may have none (GNOME without
+/// Follows whether a tray can show t3agent37's icon. Linux desktops may have none (GNOME without
 /// the AppIndicator extension): there the panel becomes an ordinary window, shown at once and
-/// reopened by launching t3boat again. Trays find icons through the StatusNotifierWatcher on
+/// reopened by launching t3agent37 again. Trays find icons through the StatusNotifierWatcher on
 /// the session bus, so its owner coming and going switches modes, also when the tray starts
-/// after t3boat at login.
+/// after t3agent37 at login.
 #[cfg(target_os = "linux")]
 fn follow_tray_host(handle: &AppHandle) {
     use gtk::gio;
@@ -450,9 +453,13 @@ fn get_machine_details(ui: State<'_, Ui>, id: String) -> Res<app::MachineDetails
 /// Signs an agent in on the machine through the vendor's own login in the browser.
 #[tauri::command]
 async fn sign_in_agent(ui: State<'_, Ui>, id: String, agent: String) -> Res {
+    let machine = ui.app()?.machine(&id).map_err(err)?;
+    if agent == app::GITHUB {
+        return machine.sign_in_github().await.map_err(err);
+    }
     let agent = crate::machine::signin::Agent::from_name(&agent)
         .ok_or_else(|| format!("{agent} has to be signed in from T3 Code's settings"))?;
-    ui.app()?.machine(&id).map_err(err)?.sign_in(agent).await.map_err(err)
+    machine.sign_in(agent).await.map_err(err)
 }
 
 /// Turns on T3 Connect there; resolves once other devices can reach it, after the user signed in
@@ -460,6 +467,14 @@ async fn sign_in_agent(ui: State<'_, Ui>, id: String, agent: String) -> Res {
 #[tauri::command]
 async fn turn_on_connect(ui: State<'_, Ui>, id: String) -> Res {
     ui.app()?.machine(&id).map_err(err)?.turn_on_connect().await.map_err(err)
+}
+
+/// Copies the machine's wake link to the clipboard and returns it; `renew` replaces the old one.
+#[tauri::command]
+async fn wake_link(ui: State<'_, Ui>, id: String, renew: bool) -> Result<String, String> {
+    let url = ui.app()?.machine(&id).map_err(err)?.wake_link(renew).await.map_err(err)?;
+    crate::machine::signin::copy_to_clipboard(&url);
+    Ok(url)
 }
 
 /// "Keep awake" for `minutes`; null: until stopped; 0 ends it.
@@ -493,25 +508,8 @@ async fn update_settings(handle: AppHandle, ui: State<'_, Ui>, settings: Setting
 
 #[tauri::command]
 async fn setup_action(handle: AppHandle, ui: State<'_, Ui>, action: String) -> Res {
-    let set_busy = |busy: bool| {
-        handle.state::<Ui>().setup.lock().unwrap().busy = busy;
-        emit_state(&handle);
-    };
     match action.as_str() {
-        "installBoat" => {
-            set_busy(true);
-            let result = install_boat().await;
-            set_busy(false);
-            result.map_err(err)?;
-        }
-        "signInBoat" => {
-            let boat = Boat::locate().ok_or("Boat CLI not found")?;
-            set_busy(true);
-            let result = sign_in_boat(&handle, &boat).await;
-            handle.state::<Ui>().setup.lock().unwrap().sign_in_code = None;
-            set_busy(false);
-            result.map_err(err)?;
-        }
+        "openKeys" => app::open_url(crate::agent37::KEYS_PAGE).map_err(err)?,
         "installT3" => app::open_url("https://t3.codes").map_err(err)?,
         "recheck" => {}
         other => return Err(format!("unknown setup action {other}")),
@@ -519,39 +517,32 @@ async fn setup_action(handle: AppHandle, ui: State<'_, Ui>, action: String) -> R
     if ui.app.lock().unwrap().is_none() {
         init(handle.clone()).await;
     } else if let Ok(app) = ui.app() {
-        refresh_account(&handle, &app.shared.boat).await;
+        refresh_account(&handle, &app.shared.a37).await;
         emit_state(&handle);
     }
     Ok(())
 }
 
-/// Boat's browser sign-in: opens its page, shows the code the page may ask for, and waits.
-async fn sign_in_boat(handle: &AppHandle, boat: &Boat) -> anyhow::Result<()> {
-    let sign_in = boat.start_sign_in().await?;
-    handle.state::<Ui>().setup.lock().unwrap().sign_in_code = sign_in.code;
-    emit_state(handle);
-    app::open_url(&sign_in.url)?;
-    boat.finish_sign_in().await
-}
-
-/// Boat's own installer, as its docs give it.
-async fn install_boat() -> anyhow::Result<()> {
-    let status = if cfg!(windows) {
-        crate::process::command("powershell")
-            .args(["-NoProfile", "-Command", "irm https://boat.dev/install.ps1 | iex"])
-            .status()
-            .await?
-    } else {
-        crate::process::command("sh")
-            .args(["-c", "curl -fsSL https://boat.dev/install | sh"])
-            .status()
-            .await?
+/// Checks the pasted Agent37 API key with Agent37, keeps it on this computer, and starts.
+#[tauri::command]
+async fn save_api_key(handle: AppHandle, ui: State<'_, Ui>, key: String) -> Res {
+    let set_busy = |busy: bool| {
+        handle.state::<Ui>().setup.lock().unwrap().busy = busy;
+        emit_state(&handle);
     };
-    anyhow::ensure!(status.success(), "the Boat installer failed");
+    if ui.app.lock().unwrap().is_some() {
+        return Err("t3agent37 already has a key; quit and remove it to use another".into());
+    }
+    let data_dir = handle.path().app_data_dir().map_err(|e| e.to_string())?;
+    set_busy(true);
+    let saved = Agent37::save(&data_dir, &key).await;
+    set_busy(false);
+    saved.map_err(err)?;
+    init(handle.clone()).await;
     Ok(())
 }
 
-/// Lets a coding agent CLI control t3boat (registers the MCP server in its user config).
+/// Lets a coding agent CLI control t3agent37 (registers the MCP server in its user config).
 #[tauri::command]
 async fn add_mcp(handle: AppHandle, client: mcp::Client) -> Res {
     let result = mcp::register(client).await.map_err(err);
@@ -569,7 +560,7 @@ pub fn run() {
         .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
         .init();
     tauri::Builder::default()
-        // Launching t3boat again, from an app launcher say, shows it.
+        // Launching t3agent37 again, from an app launcher say, shows it.
         .plugin(tauri_plugin_single_instance::init(|handle, _, _| open_panel(handle, None)))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_notification::init())
@@ -588,10 +579,12 @@ pub fn run() {
             keep_awake,
             sign_in_agent,
             turn_on_connect,
+            wake_link,
             get_machine_details,
             latest_thread,
             update_settings,
             setup_action,
+            save_api_key,
             add_mcp,
             quit_app
         ])
@@ -599,13 +592,13 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let open = MenuItem::with_id(app, "open", "Open t3boat", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit t3boat", true, None::<&str>)?;
+            let open = MenuItem::with_id(app, "open", "Open t3agent37", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit t3agent37", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
             TrayIconBuilder::with_id("main")
                 .icon(tauri::image::Image::from_bytes(TRAY_ICON)?)
                 .icon_as_template(true)
-                .tooltip("t3boat")
+                .tooltip("t3agent37")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -631,7 +624,7 @@ pub fn run() {
                 let hide = panel.clone();
                 let handle = app.handle().clone();
                 // For screen recordings: keep the card up while clicking around other apps.
-                let keep_open = std::env::var_os("T3BOAT_KEEP_PANEL_OPEN").is_some();
+                let keep_open = std::env::var_os("T3AGENT37_KEEP_PANEL_OPEN").is_some();
                 panel.on_window_event(move |e| match e {
                     WindowEvent::Focused(false) if !keep_open && !windowed(&handle) => {
                         let _ = hide.hide();
@@ -650,7 +643,7 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while building t3boat")
+        .expect("error while building t3agent37")
         .run(|_, event| {
             // A tray app keeps running with its window closed.
             if let tauri::RunEvent::ExitRequested { api, code: None, .. } = event {

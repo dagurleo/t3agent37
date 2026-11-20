@@ -12,9 +12,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
 
-/// Second check on a confirmed capture: Boat's stop time must follow it closely (allowing for
-/// clock skew between this computer and Boat).
-/// The watchdog stops right after the ack and gives up on a stop after 90 s.
+/// Second check on a confirmed capture: Agent37's sleep time must follow it closely (allowing for
+/// clock skew between this computer and Agent37). This app sleeps the VM right after the ack.
 const CAPTURE_TO_STOP_MAX: chrono::TimeDelta = chrono::TimeDelta::minutes(2);
 /// Time for a capture, shell and chats. The watchdog stops 20 s into a drain, acked or not,
 /// and this app may learn of the drain 5 s late.

@@ -37,6 +37,8 @@ export type Action = {
   | { cmd: "keep_awake"; minutes: number | null }
   /** the agent's name as `signedOut` lists it */
   | { cmd: "sign_in_agent"; agent: string }
+  /** renew: replace the link, so the old one stops working */
+  | { cmd: "wake_link"; renew: boolean }
   /** discard: delete even while work runs on it */
   | { cmd: "delete_machine"; discard: boolean }
 );
@@ -60,6 +62,8 @@ export const ACTIONS = {
   retry: { cmd: "wake_machine", label: "Try waking", busy: "Waking…" },
   sleep: { cmd: "sleep_machine", label: "Sleep now", busy: "Sleeping…" },
   connect: { cmd: "turn_on_connect", label: "Turn on", busy: "Approve in browser…" },
+  wakeLink: { cmd: "wake_link", label: "Copy link", busy: "Copying…", renew: false },
+  newWakeLink: { cmd: "wake_link", label: "New link", busy: "Replacing…", renew: true },
   remove: { cmd: "delete_machine", label: "Remove", busy: "Removing…", discard: true },
   del: { cmd: "delete_machine", label: "Delete", busy: "Deleting…", discard: false },
   deleteAnyway: { cmd: "delete_machine", label: "Delete anyway", busy: "Deleting…", discard: true },
@@ -77,7 +81,7 @@ export function primaryAction(m: MachineView): Action | null {
     case "missing":
       return ACTIONS.remove;
     default:
-      return null; // transitional: the boat + detail line say what's happening
+      return null; // transitional: the agent + detail line say what's happening
   }
 }
 
@@ -136,9 +140,9 @@ export function powerAction(m: MachineView): Action | null {
 
 /** When a resize takes effect, per contract. */
 export function resizeHint(m: MachineView): string {
-  if (m.state === "asleep") return "Applies on next wake";
-  if (m.state === "working") return "Applies after it next sleeps, never mid-turn";
-  if (m.state === "idle") return "Restarts onto the new size now (about a minute)";
+  if (m.state === "asleep") return "Applies on its next wake";
+  if (m.state === "working") return "Applies at a later wake that finds it idle, never mid-turn";
+  if (m.state === "idle") return "Reboots onto the new size now (about a minute)";
   return "Billed only while awake";
 }
 
@@ -174,13 +178,14 @@ export const hourly = (n: number) => `$${n < 0.1 ? n.toFixed(3) : n.toFixed(2)}/
 
 export const sizeOf = (sizes: Size[], id: string) => sizes.find((s) => s.id === id);
 
-const NAMES = ["skiff", "dinghy", "sloop", "ketch", "yawl", "cutter", "dory", "schooner", "clipper", "catboat", "junk", "brig"];
+/** Codenames for new machines. */
+const NAMES = ["raven", "falcon", "kestrel", "lynx", "fox", "heron", "magpie", "otter", "sparrow", "jackal", "osprey", "badger"];
 
 export function suggestName(taken: string[]): string {
   const used = new Set(taken);
   const free = NAMES.find((n) => !used.has(n));
   if (free) return free;
-  for (let i = 2; ; i++) if (!used.has(`skiff-${i}`)) return `skiff-${i}`;
+  for (let i = 2; ; i++) if (!used.has(`raven-${i}`)) return `raven-${i}`;
 }
 
 export const NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;

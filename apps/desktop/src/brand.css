@@ -1,4 +1,4 @@
-/* t3boat brand: fonts and color tokens. Shared with apps/web. */
+/* t3agent37 brand: fonts and color tokens. Noir amber: plum dusk, sodium-lamp amber. */
 
 @import "@fontsource-variable/inter";
 @import "@fontsource-variable/funnel-display";
@@ -6,64 +6,65 @@
 @import "@fontsource/ibm-plex-mono/500.css";
 
 :root {
-  --wash: #fefefe;
-  --ink: #060606;
-  --ocean: #263fa9;
-  --blue-50: #f1f3f9;
-  --blue-100: #e0e3f2;
-  --blue-200: #c2c9e6;
-  --blue-300: #929fd3;
-  --blue-400: #6b7cc4;
-  --blue-500: #495eb7;
-  --navy-700: #1d2a6b;
-  --navy-800: #182358;
-  --navy-900: #131c45;
-  --navy-950: #0f1634;
+  --paper: #fdfaf6;
+  --ink: #1b1622;
+  --amber: #c2581f;
+  /* warm greys from paper towards plum */
+  --tone-50: #faf4ed;
+  --tone-100: #f3e7da;
+  --tone-200: #e2cdb8;
+  --tone-300: #c5a58a;
+  --tone-400: #9b7a68;
+  --tone-500: #6e5560;
+  --deep-700: #4a3a4f;
+  --deep-800: #33293a;
+  --deep-900: #241d29;
+  --deep-950: #141117;
 
-  --bg: var(--wash);
+  --bg: var(--paper);
   --fg: var(--ink);
-  --muted: #565e80;
-  --line: var(--blue-100);
-  --frame: var(--blue-400);
-  --panel: var(--blue-50);
-  --accent: var(--ocean);
+  --muted: #7a6872;
+  --line: var(--tone-100);
+  --frame: var(--tone-400);
+  --panel: var(--tone-50);
+  --accent: var(--amber);
   --accent-fg: #fff;
-  --accent-strong: #1d2f86;
-  --accent-text: var(--ocean);
+  --accent-strong: #9c4314;
+  --accent-text: #b4501c;
   --danger: #c8372b;
-  --shadow: var(--blue-200);
-  --tag-bg: var(--wash);
+  --shadow: var(--tone-200);
+  --tag-bg: var(--paper);
   --tag-fg: var(--ink);
-  --tag-dim-bg: var(--blue-200);
-  --tag-dim-fg: var(--navy-700);
+  --tag-dim-bg: var(--tone-200);
+  --tag-dim-fg: var(--deep-700);
 
   --font-display: "Funnel Display Variable", "Funnel Display", system-ui, sans-serif;
   --font-body: "Inter Variable", Inter, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 
-  --ocean-ease: 220ms cubic-bezier(0.3, 0.7, 0.4, 1);
+  --strip-ease: 220ms cubic-bezier(0.3, 0.7, 0.4, 1);
 
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: var(--navy-950);
-    --fg: #eef0f8;
-    --muted: var(--blue-300);
-    --line: #1f2b66;
-    --frame: #3a4c9e;
-    --panel: var(--navy-900);
-    --accent: var(--blue-100);
-    --accent-fg: var(--ocean);
-    --accent-strong: var(--wash);
-    --accent-text: #a9b5ec;
+    --bg: var(--deep-950);
+    --fg: #f6efe6;
+    --muted: var(--tone-300);
+    --line: #2a2230;
+    --frame: #5a4658;
+    --panel: #1c1720;
+    --accent: #ffb547;
+    --accent-fg: var(--deep-950);
+    --accent-strong: #ffd08a;
+    --accent-text: #ffc061;
     --danger: #ff7a62;
-    --shadow: #080c22;
-    --tag-bg: var(--blue-100);
-    --tag-fg: var(--navy-950);
-    --tag-dim-bg: var(--navy-800);
-    --tag-dim-fg: var(--blue-300);
+    --shadow: #08060a;
+    --tag-bg: #f6d3a4;
+    --tag-fg: var(--deep-950);
+    --tag-dim-bg: var(--deep-800);
+    --tag-dim-fg: var(--tone-300);
     color-scheme: dark;
   }
 }

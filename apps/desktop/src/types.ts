@@ -1,6 +1,6 @@
 // Mirrors docs/ui-contract.md exactly.
 
-export type Setup = "starting" | "ready" | "installBoat" | "signInBoat" | "installT3";
+export type Setup = "starting" | "ready" | "connectAgent37" | "installT3";
 
 export type MachineState =
   | "working"
@@ -64,11 +64,13 @@ export type McpClient = "claudeCode" | "codex";
 export interface UiState {
   setup: Setup;
   setupBusy: boolean;
-  /** while a Boat sign-in waits: the code its page may ask for */
+  /** unused: Agent37 takes an API key */
   signInCode: string | null;
-  account: { identifier: string | null; plan: string | null } | null;
+  /** the Agent37 wallet, as last read */
+  account: { balanceUsd: number; memoryLimitGb: number; pastDue: boolean } | null;
   machines: MachineView[];
-  costs: { today: number; month: number; startsToday: number; startsLimit: number };
+  /** spend in UTC days, as Agent37 reports it; balance: what's left in the wallet */
+  costs: { today: number; month: number; balance: number | null };
   settings: Settings;
   sizes: Size[];
   /** null = that CLI isn't installed */
@@ -87,7 +89,7 @@ export interface MachineDetails {
   connect: boolean;
 }
 
-export type SetupAction = "installBoat" | "signInBoat" | "installT3" | "recheck";
+export type SetupAction = "openKeys" | "installT3" | "recheck";
 
 export interface Commands {
   get_state: [undefined, UiState];
@@ -103,11 +105,13 @@ export interface Commands {
   keep_awake: [{ id: string; minutes: number | null }, void]; // null: until stopped; 0: stop
   sign_in_agent: [{ id: string; agent: string }, void];
   turn_on_connect: [{ id: string }, void]; // resolves once reachable, after the browser sign-in
+  wake_link: [{ id: string; renew: boolean }, string]; // copied to the clipboard too; renew replaces it
   latest_thread: [{ id: string }, string | null]; // thread id
   get_machine_details: [{ id: string }, MachineDetails];
   add_mcp: [{ client: McpClient }, void];
   update_settings: [{ settings: Settings }, void];
   setup_action: [{ action: SetupAction }, void];
+  save_api_key: [{ key: string }, void]; // checks it with Agent37, then starts
   quit_app: [undefined, void];
 }
 

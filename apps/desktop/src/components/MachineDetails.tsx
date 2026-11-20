@@ -23,7 +23,7 @@ import {
   type Action,
 } from "../machine";
 import { AgentName } from "./AgentLogos";
-import { BoatIcon } from "./BoatIcon";
+import { SpyIcon } from "./SpyIcon";
 import { DeleteErrorNote, Dots, useArmed, useDetail, useEscape, useSecsLeft } from "./common";
 import { Icon } from "./Icons";
 import { ProjectPicker } from "./ProjectPicker";
@@ -132,8 +132,8 @@ function Glance({ m, size, d }: { m: MachineView; size: Size | undefined; d: Det
   return (
     <section className="glance" aria-label={`${m.name}: ${detail}`}>
       <div className="glance-top">
-        <div className="glance-boat">
-          <BoatIcon state={m.state} seed={seedOf(machineKey(m))} />
+        <div className="glance-spy">
+          <SpyIcon state={m.state} seed={seedOf(machineKey(m))} />
         </div>
         <div className="glance-text">
           <span className="glance-state">
@@ -201,7 +201,7 @@ function Power({ m, busy, onAction }: { m: MachineView; busy: boolean; onAction:
         <span className="toggle-text">
           <span className="toggle-name">Auto sleep</span>
           <span className="hint">
-            {on ? "Sleeps 5 min after agents finish; asleep is free" : "Stays up and bills until you turn this back on"}
+            {on ? "Sleeps 5 min after agents finish; asleep bills disk only" : "Stays up and bills until you turn this back on"}
           </span>
         </span>
         <input
@@ -375,9 +375,42 @@ function Connect({
                 </button>
               )}
             </li>
-            {d.connect ? null : (
+            {d.connect ? (
+              <>
+                <li className="line">
+                  <span className="line-main">Wake link</span>
+                  <button
+                    className="btn btn-sm btn-outline"
+                    disabled={!!pending || m.state === "missing"}
+                    aria-busy={pending === ACTIONS.wakeLink.busy}
+                    onClick={() => onAction(ACTIONS.wakeLink)}
+                  >
+                    {pending === ACTIONS.wakeLink.busy ? (
+                      <>
+                        <Dots /> {ACTIONS.wakeLink.busy}
+                      </>
+                    ) : (
+                      ACTIONS.wakeLink.label
+                    )}
+                  </button>
+                </li>
+                <li className="line">
+                  <span className="line-main line-dim line-note">
+                    T3 Connect can't wake {m.name}. Open this link on your phone first, then pick it in T3 Code. The
+                    link only wakes it; using it still takes your T3 sign-in.{" "}
+                    <button
+                      className="btn btn-link"
+                      disabled={!!pending || m.state === "missing"}
+                      onClick={() => onAction(ACTIONS.newWakeLink)}
+                    >
+                      {pending === ACTIONS.newWakeLink.busy ? ACTIONS.newWakeLink.busy : "Replace link"}
+                    </button>
+                  </span>
+                </li>
+              </>
+            ) : (
               <li className="line">
-                <span className="line-main line-dim">T3 Code on your phone or in a browser, with your T3 account</span>
+                <span className="line-main line-dim line-note">T3 Code on your phone or in a browser, with your T3 account</span>
               </li>
             )}
           </>

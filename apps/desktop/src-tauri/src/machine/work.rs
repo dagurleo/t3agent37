@@ -1,4 +1,4 @@
-//! Work running on a machine: keeping it up for t3boat's own jobs, and guarding deletes.
+//! Work running on a machine: keeping it up for t3agent37's own jobs, and guarding deletes.
 
 use super::{MachineRuntime, Power, HEARTBEAT_EVERY};
 use anyhow::{bail, Result};

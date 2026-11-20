@@ -2,7 +2,7 @@
 //! `projectClone.start` on the machine's server, which clones and registers the project and
 //! shows its progress in T3 Code, then the env files written in with `projects.writeFile`.
 
-use super::{MachineRuntime, Power};
+use super::MachineRuntime;
 use crate::projects::{self, Project};
 use crate::proxy::upstream;
 use anyhow::{bail, Result};
@@ -58,7 +58,7 @@ impl MachineRuntime {
 
     /// Reads the projects from the machine if it runs.
     pub async fn refresh_projects(&self) {
-        if self.power() != Power::Running {
+        if !self.up_for_background() {
             return;
         }
         match self.shell_snapshot().await {
@@ -186,15 +186,15 @@ fn progress(clone: &Value) -> String {
     parts.join(" · ")
 }
 
-/// A clone the git host turned away: the machine's git uses the GitHub login Boat gives every
-/// sandbox, the one of the Boat account.
+/// A clone the git host turned away: the machine's git uses its own gh login, which t3agent37
+/// signs in per machine.
 fn explain_clone_failure(e: anyhow::Error, machine: &str) -> anyhow::Error {
     let text = format!("{e:#}");
     let auth = ["Authentication failed", "could not read Username", "Permission denied", "Repository not found", "terminal prompts disabled"]
         .iter()
         .any(|s| text.contains(s));
     if auth {
-        anyhow::anyhow!("{text}\n{machine} uses the GitHub login of your Boat account, which has no access to this repo.")
+        anyhow::anyhow!("{text}\n{machine} isn't signed in to a GitHub account with access to this repo: sign in to GitHub in its details.")
     } else {
         e
     }

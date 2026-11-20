@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "t3boat",
+  "productName": "t3agent37",
   "version": "0.1.0",
-  "identifier": "dev.t3boat.app",
+  "identifier": "dev.t3agent37.app",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "panel",
-        "title": "t3boat",
+        "title": "t3agent37",
         "width": 380,
         "height": 560,
         "resizable": false,

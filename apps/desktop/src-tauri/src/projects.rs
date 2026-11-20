@@ -1,6 +1,6 @@
 //! T3 Code's projects as its shell snapshot describes them, and the rules of its own "Add to
 //! another machine" dialog (`AddProjectToMachineDialog.tsx`, `addProjectToMachine.ts`), so a
-//! project added from t3boat ends up exactly as one added in T3 Code.
+//! project added from t3agent37 ends up exactly as one added in T3 Code.
 
 use serde::Serialize;
 use serde_json::Value;

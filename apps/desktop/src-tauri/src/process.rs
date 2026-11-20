@@ -1,4 +1,4 @@
-//! Child processes. On Windows t3boat is a windowed app, so each console program it runs (boat,
+//! Child processes. On Windows t3agent37 is a windowed app, so each console program it runs (git,
 //! the `t3` launcher, PowerShell) would open a console window of its own; they start without one.
 
 use std::ffi::OsStr;

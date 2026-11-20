@@ -2,107 +2,153 @@ import { rgb, type Color } from "./px";
 
 export type Theme = "light" | "dark";
 
-export interface BoatColors {
-  sail: Color;
-  sailShade: Color;
-  deck: Color;
-  hull: Color;
-  keel: Color;
-  mast: Color;
+/** One field agent's outfit, hat to shoes. */
+export interface SpyColors {
+  hat: Color;
+  band: Color;
+  face: Color;
+  faceShade: Color;
+  glasses: Color;
+  coat: Color;
+  shirt: Color;
+  legs: Color;
+  shoes: Color;
+  briefcase: Color;
 }
 
+/** Noir amber: plum and amber dusk by day, charcoal and sodium-lit windows by night. */
 export interface Palette {
   bg: Color;
   sky: Color[]; // top → horizon
-  water: Color[]; // lightest → darkest
-  waterFrom: number; // ramp index at the horizon
-  waterTo: number; // ramp index in the deepest row
-  waterFade: number; // ramp index the shallows fade toward (≈ page background)
-  shore: Color;
-  tower: Color;
-  towerStripe: Color;
-  lamp: Color;
-  glow: Color[]; // sun / moon halo, inner → outer
+  roof: Color[]; // lightest → darkest
+  roofFrom: number; // ramp index just past the ledge
+  roofTo: number; // ramp index in the deepest row
+  roofFade: number; // ramp index the near roof fades toward (≈ page background)
+  ledge: Color;
+  ledgeShade: Color;
+  far: Color; // distant skyline
+  farWindow: Color;
+  near: Color; // nearer skyline
+  window: Color;
+  windowLit: Color;
+  tower: Color; // the searchlight's building and the roof's fixtures
+  lamp: Color; // searchlight at night
+  beacon: Color; // aircraft light by day
+  glow: Color[]; // sun / moon, inner → outer
   star: Color[];
   cloud: Color[]; // lit top → shaded underside
-  foam: Color;
-  flag: Color;
-  reflection: Color;
-  sailReflection: Color;
-  boat: BoatColors;
-  boatAsleep: BoatColors;
+  crate: Color;
+  crateShade: Color;
+  rope: Color;
+  alarm: Color;
+  zzz: Color;
+  spy: SpyColors;
+  spyDim: SpyColors; // asleep, gone, or not heard from
 }
 
+const spy = (c: Record<keyof SpyColors, string>): SpyColors =>
+  Object.fromEntries(Object.entries(c).map(([k, v]) => [k, rgb(v)])) as unknown as SpyColors;
+
 const light: Palette = {
-  bg: rgb("#fefefe"),
-  sky: ["#263fa9", "#263fa9", "#495eb7", "#6b7cc4", "#929fd3", "#c2c9e6", "#e0e3f2", "#f1f3f9"].map(rgb),
-  water: ["#fefefe", "#e0e3f2", "#c2c9e6", "#929fd3", "#6b7cc4", "#495eb7", "#263fa9"].map(rgb),
-  waterFrom: 2,
-  waterTo: 6,
-  waterFade: 0.6,
-  shore: rgb("#6b7cc4"),
-  tower: rgb("#1d2a6b"),
-  towerStripe: rgb("#fefefe"),
-  lamp: rgb("#fefefe"),
-  glow: ["#fefefe", "#f1f3f9", "#e0e3f2"].map(rgb),
+  bg: rgb("#fdfaf6"),
+  sky: ["#2a2235", "#3b2c45", "#5a3b52", "#8a4f57", "#c26f55", "#e9a46a", "#f6d3a4", "#fbeedd"].map(rgb),
+  roof: ["#fdfaf6", "#f3e7da", "#e2cdb8", "#c5a58a", "#9b7a68", "#6e5560", "#4a3a4f"].map(rgb),
+  roofFrom: 2,
+  roofTo: 4.4,
+  roofFade: 0.6,
+  ledge: rgb("#f3e7da"),
+  ledgeShade: rgb("#6e5560"),
+  far: rgb("#8a6f80"),
+  farWindow: rgb("#a98d98"),
+  near: rgb("#3b2c45"),
+  window: rgb("#5a3b52"),
+  windowLit: rgb("#ffcf7a"),
+  tower: rgb("#2a2235"),
+  lamp: rgb("#fff7e8"),
+  beacon: rgb("#e0452f"),
+  glow: ["#fff7e8", "#fbeedd", "#f6d3a4"].map(rgb),
   star: [],
-  cloud: ["#fefefe", "#f1f3f9", "#e0e3f2", "#c2c9e6"].map(rgb),
-  foam: rgb("#fefefe"),
-  flag: rgb("#e0452f"),
-  reflection: rgb("#1d2a6b"),
-  sailReflection: rgb("#c2c9e6"),
-  boat: {
-    sail: rgb("#fefefe"),
-    sailShade: rgb("#c2c9e6"),
-    deck: rgb("#495eb7"),
-    hull: rgb("#1d2a6b"),
-    keel: rgb("#131c45"),
-    mast: rgb("#131c45"),
-  },
-  boatAsleep: {
-    sail: rgb("#e0e3f2"),
-    sailShade: rgb("#c2c9e6"),
-    deck: rgb("#6b7cc4"),
-    hull: rgb("#1d2a6b"),
-    keel: rgb("#131c45"),
-    mast: rgb("#1d2a6b"),
-  },
+  cloud: ["#fdfaf6", "#fbeedd", "#f6d3a4", "#e9a46a"].map(rgb),
+  crate: rgb("#c5a58a"),
+  crateShade: rgb("#9b7a68"),
+  rope: rgb("#6e5560"),
+  alarm: rgb("#e0452f"),
+  zzz: rgb("#2a2235"),
+  spy: spy({
+    hat: "#1b1622",
+    band: "#c26f55",
+    face: "#f6e3cf",
+    faceShade: "#d9b99a",
+    glasses: "#0d0b10",
+    coat: "#2a2235",
+    shirt: "#fdfaf6",
+    legs: "#1b1622",
+    shoes: "#0d0b10",
+    briefcase: "#5a3b2a",
+  }),
+  spyDim: spy({
+    hat: "#4a3a4f",
+    band: "#9b7a68",
+    face: "#efe0d2",
+    faceShade: "#c5a58a",
+    glasses: "#4a3a4f",
+    coat: "#6e5560",
+    shirt: "#f3e7da",
+    legs: "#4a3a4f",
+    shoes: "#33293a",
+    briefcase: "#6e5560",
+  }),
 };
 
 const dark: Palette = {
-  bg: rgb("#0f1634"),
-  sky: ["#0b1029", "#0f1634", "#0f1634", "#131c45", "#182358", "#1d2a6b", "#263fa9"].map(rgb),
-  water: ["#c2c9e6", "#929fd3", "#6b7cc4", "#495eb7", "#263fa9", "#1d2a6b", "#182358", "#131c45"].map(rgb),
-  waterFrom: 4,
-  waterTo: 7,
-  waterFade: 7,
-  shore: rgb("#0b1029"),
-  tower: rgb("#0b1029"),
-  towerStripe: rgb("#495eb7"),
-  lamp: rgb("#fefefe"),
-  glow: ["#e0e3f2", "#c2c9e6", "#495eb7"].map(rgb),
-  star: ["#e0e3f2", "#929fd3", "#495eb7"].map(rgb),
+  bg: rgb("#141117"),
+  sky: ["#0c0a0e", "#141117", "#141117", "#1c1720", "#261e2b", "#352736", "#4a3140"].map(rgb),
+  roof: ["#f6d3a4", "#c5a58a", "#9b7a68", "#6e5560", "#4a3a4f", "#33293a", "#241d29", "#18141b"].map(rgb),
+  roofFrom: 4,
+  roofTo: 6.2,
+  roofFade: 7,
+  ledge: rgb("#6e5560"),
+  ledgeShade: rgb("#0c0a0e"),
+  far: rgb("#1f1925"),
+  farWindow: rgb("#3b2c45"),
+  near: rgb("#0c0a0e"),
+  window: rgb("#1c1720"),
+  windowLit: rgb("#ffb547"),
+  tower: rgb("#0c0a0e"),
+  lamp: rgb("#ffe2a8"),
+  beacon: rgb("#ff6a4d"),
+  glow: ["#fbeedd", "#f6d3a4", "#8a4f57"].map(rgb),
+  star: ["#fbeedd", "#c5a58a", "#6e5560"].map(rgb),
   cloud: [],
-  foam: rgb("#c2c9e6"),
-  flag: rgb("#ff6a4d"),
-  reflection: rgb("#0b1029"),
-  sailReflection: rgb("#495eb7"),
-  boat: {
-    sail: rgb("#e0e3f2"),
-    sailShade: rgb("#929fd3"),
-    deck: rgb("#6b7cc4"),
-    hull: rgb("#263fa9"),
-    keel: rgb("#1d2a6b"),
-    mast: rgb("#c2c9e6"),
-  },
-  boatAsleep: {
-    sail: rgb("#c2c9e6"),
-    sailShade: rgb("#929fd3"),
-    deck: rgb("#6b7cc4"),
-    hull: rgb("#263fa9"),
-    keel: rgb("#1d2a6b"),
-    mast: rgb("#929fd3"),
-  },
+  crate: rgb("#4a3a4f"),
+  crateShade: rgb("#33293a"),
+  rope: rgb("#6e5560"),
+  alarm: rgb("#ff6a4d"),
+  zzz: rgb("#f6d3a4"),
+  spy: spy({
+    hat: "#0c0a0e",
+    band: "#c26f55",
+    face: "#f6e3cf",
+    faceShade: "#c5a58a",
+    glasses: "#000000",
+    coat: "#c9a77c",
+    shirt: "#fdfaf6",
+    legs: "#0c0a0e",
+    shoes: "#000000",
+    briefcase: "#0c0a0e",
+  }),
+  spyDim: spy({
+    hat: "#33293a",
+    band: "#6e5560",
+    face: "#c5a58a",
+    faceShade: "#9b7a68",
+    glasses: "#33293a",
+    coat: "#8a7466",
+    shirt: "#c5a58a",
+    legs: "#241d29",
+    shoes: "#18141b",
+    briefcase: "#33293a",
+  }),
 };
 
 export const palettes: Record<Theme, Palette> = { light, dark };

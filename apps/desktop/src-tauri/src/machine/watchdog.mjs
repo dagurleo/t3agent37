@@ -1,42 +1,48 @@
-// t3boat watchdog. Runs on the Boat sandbox next to the T3 server and stops the sandbox once no
-// agent works and nobody used it for `sleepAfterSecs`. It lives here, not on the laptop, so
-// machines finish their work and then sleep even when the laptop is closed.
+// t3agent37 watchdog. Runs on the Agent37 VM next to the T3 server and decides when the machine
+// sleeps: once no agent works and nobody used it for `sleepAfterSecs`. It lives here, not on the
+// laptop, so machines finish their work and then sleep even when the laptop is closed.
 //
-// Going to sleep, it first saves the disk as a Boat snapshot: Boat deletes a stopped sandbox's
-// disk after 14 days, the saved snapshot stays, and t3boat restores the machine from it.
+// Going to sleep, it "drains": it publishes a manifest of the final orchestration state so the
+// laptop proxy can keep answering T3 Code truthfully while the machine sleeps. The proxy captures
+// it and acks; without an ack (laptop gone) the watchdog stops after a grace period.
 //
-// Then it "drains": it publishes a manifest of the final orchestration state so the laptop
-// proxy can keep answering T3 Code truthfully while the machine sleeps. The proxy captures it
-// and acks; without an ack (laptop gone) the watchdog stops after a grace period.
+// It holds no Agent37 key (a workspace key could create and delete machines), so it cannot sleep
+// the VM itself. Instead the VM runs with Agent37's auto-sleep on, which sleeps it once nothing
+// moved through its URLs for a few minutes, and the watchdog keeps it awake by calling its own
+// public heartbeat URL every minute until it decides to stop. Stopping, it goes quiet: the
+// laptop app, if it runs, sleeps the VM right away through the API; otherwise auto-sleep does.
 
 import { createServer } from "node:http";
 import { readFileSync, writeFileSync } from "node:fs";
-import { execFile } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { availableParallelism, homedir } from "node:os";
 import { join } from "node:path";
 
 const HOME = homedir();
-const CONFIG_PATH = join(HOME, ".t3boat", "config.json");
+const CONFIG_PATH = join(HOME, ".t3agent37", "config.json");
 // On disk, so it survives watchdog restarts (upgrades); a stop ends it (see BOOT_ID).
-const KEEP_AWAKE_PATH = join(HOME, ".t3boat", "keep-awake-until");
+const KEEP_AWAKE_PATH = join(HOME, ".t3agent37", "keep-awake-until");
 const MAX_KEEP_AWAKE_MINUTES = 24 * 60;
 const DB_PATH = join(HOME, ".t3", "userdata", "statev2.sqlite");
 const T3_ORIGIN = "http://127.0.0.1:3773";
 const PORT = 3774;
+// Agent37 routes this port's public URL here: every call to it counts as activity on the VM.
+const HEARTBEAT_PORT = 3775;
+const HEARTBEAT_MS = 60_000;
+// The wake link's public URL routes here (see the server at the bottom).
+const WAKE_PORT = 3776;
 const TICK_MS = 5_000;
 const DRAIN_GRACE_MS = 20_000;
 // A tick that arrives this late means the VM was frozen: a warm resume after a stop.
 const RESUMED_GAP_MS = 30_000;
-// Still running this long after asking Boat to stop: the stop failed or a fast resume undid it.
-const STOP_SETTLE_MS = 90_000;
-// A save takes about 30 s. One that hangs must not keep the machine up.
-const SNAPSHOT_TIMEOUT_MS = 120_000;
+// Still running this long after going quiet: neither the laptop app nor auto-sleep (idle 5 min)
+// took it, so something else keeps traffic flowing. Back to active, and try again later.
+const STOP_SETTLE_MS = 10 * 60_000;
 
 const config = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
 const log = (...args) => console.log(new Date().toISOString(), ...args);
 
-/** @type {"active" | "saving" | "draining" | "stopping"} */
+/** @type {"active" | "draining" | "stopping"} */
 let phase = "active";
 /** Last time anything held the machine up, CPU load included: the idle countdown starts here. */
 let lastActivityAt = Date.now();
@@ -103,8 +109,6 @@ function sampleCpu() {
 }
 let manifest = null;
 let drainStartedAt = 0;
-/** Counts the saves begun: one called off and begun again must not finish for the later one. */
-let saves = 0;
 let lastTickAt = Date.now();
 let stopRequestedAt = 0;
 /** "Keep awake": no sleeping before this (ms since epoch), working or not; Infinity = until stopped. */
@@ -135,12 +139,12 @@ function setKeepAwake(minutes) {
 // time stays behind in T3's rows after it ran.
 const DUE_SOON_MS = 5 * 60_000;
 const OVERDUE_MS = 2 * 60_000;
-/** When T3 next starts work on its own, ms since epoch; null for never. t3boat wakes the machine for it. */
+/** When T3 next starts work on its own, ms since epoch; null for never. t3agent37 wakes the machine for it. */
 let nextDueAt = null;
 const dueSoon = () => nextDueAt !== null && nextDueAt - Date.now() < DUE_SOON_MS;
 
-// Events only a person causes, from any client: T3 Code through t3boat, but also a phone or
-// another computer through T3 Connect, which t3boat never sees.
+// Events only a person causes, from any client: T3 Code through t3agent37, but also a phone or
+// another computer through T3 Connect, which t3agent37 never sees.
 const PERSON_EVENTS = [
   "thread.created",
   "thread.visit-recorded",
@@ -252,16 +256,6 @@ function readManifest() {
   }
 }
 
-/** Saves the snapshot, then drains, unless the machine is used meanwhile. */
-async function save() {
-  phase = "saving";
-  const mine = ++saves;
-  log("saving snapshot", config.snapshot);
-  // A machine that cannot save still sleeps: it must not bill on, and Boat keeps its disk 14 days.
-  await boat(["snapshot", "self", config.snapshot], SNAPSHOT_TIMEOUT_MS).catch((e) => log("snapshot failed", e.message));
-  if (phase === "saving" && mine === saves) drain();
-}
-
 function drain() {
   try {
     manifest = readManifest();
@@ -289,23 +283,30 @@ function hold(reason) {
   manifest = null;
 }
 
-/** Runs the Boat CLI, in a login shell for its PATH. */
-function boat(args, timeout) {
-  return new Promise((resolve, reject) => {
-    execFile("bash", ["-lc", 'boat "$@" --json', "boat", ...args], { timeout }, (err, stdout, stderr) =>
-      err ? reject(new Error(stderr.trim() || stdout.trim() || err.message)) : resolve(stdout),
-    );
-  });
-}
-
+/** Goes quiet so the VM can sleep: the laptop app sleeps it now, or auto-sleep in a few minutes. */
 function stopSelf() {
   phase = "stopping";
   stopRequestedAt = Date.now();
-  log("stopping sandbox");
-  boat(["stop", "self"]).catch((e) => {
-    log("boat stop failed", e.message);
-    touch("stop failed");
-  });
+  log("stopping: heartbeat off");
+}
+
+/**
+ * Keeps Agent37's auto-sleep off the VM while the watchdog wants it up. Never awaited by the
+ * loop: a slow edge must not stretch a tick into what looks like a resume (which ends a keep-awake).
+ */
+let lastHeartbeatAt = 0;
+let heartbeatInFlight = false;
+function heartbeat() {
+  if (heartbeatInFlight || phase === "stopping" || !config.heartbeatUrl || Date.now() - lastHeartbeatAt < HEARTBEAT_MS) return;
+  lastHeartbeatAt = Date.now();
+  heartbeatInFlight = true;
+  fetch(config.heartbeatUrl, { signal: AbortSignal.timeout(15_000) })
+    .then((res) => res.arrayBuffer())
+    .catch((e) => {
+      log("heartbeat failed", e.message);
+      lastHeartbeatAt = 0;
+    })
+    .finally(() => (heartbeatInFlight = false));
 }
 
 async function tick() {
@@ -316,7 +317,16 @@ async function tick() {
   }
   lastTickAt = now;
   if (phase === "stopping") {
-    if (now - stopRequestedAt > STOP_SETTLE_MS) touch("still running after stop");
+    if (now - stopRequestedAt > STOP_SETTLE_MS) return touch("still running after stop");
+    // Until the VM actually sleeps, use from elsewhere (a phone through T3 Connect, an agent
+    // starting on its own) calls the stop off: the heartbeat comes back with it.
+    await refreshWorking();
+    let acted = false;
+    try {
+      acted = readT3State();
+    } catch {}
+    if (agentsWorking()) touch("agent working");
+    else if (acted) touch("used in T3");
     return;
   }
 
@@ -338,7 +348,7 @@ async function tick() {
 
   const idleMs = now - lastActivityAt;
   // Not awaited: ticks go on during the save, so an agent starting to work calls it off.
-  if (phase === "active" && idleMs >= config.sleepAfterSecs * 1000) save();
+  if (phase === "active" && idleMs >= config.sleepAfterSecs * 1000) drain();
   else if (phase === "draining" && now - drainStartedAt >= DRAIN_GRACE_MS) finishDrain();
 }
 
@@ -406,8 +416,7 @@ const server = createServer(async (req, res) => {
         touch("resumed");
         return reply(200, status());
       }
-      // Too late to call off a stop: the proxy waits for it and resumes the machine.
-      if (phase === "stopping") return reply(409, { error: "stopping", ...status() });
+      // Going quiet is not final: until the VM actually sleeps, use calls it off.
       touch("user activity");
       return reply(200, status());
     }
@@ -420,16 +429,13 @@ const server = createServer(async (req, res) => {
         return reply(409, { error, ...status() });
       }
       setKeepAwake(0);
-      if (phase === "active") save();
+      if (phase === "active") drain();
       sleepRequested = true;
       return reply(200, status());
     }
     if (req.method === "POST" && req.url === "/keep-awake") {
       // { minutes }: null = until stopped, 0 ends it. Counted on this machine's clock, never the laptop's.
       const { minutes } = JSON.parse((await readBody(req)) || "{}");
-      // Too late during a stop (checked after the body: a stop can begin meanwhile): the proxy
-      // waits for it, resumes the machine and asks again.
-      if (phase === "stopping") return reply(409, { error: "stopping", ...status() });
       const valid = minutes === null || (Number.isInteger(minutes) && minutes >= 0 && minutes <= MAX_KEEP_AWAKE_MINUTES);
       if (!valid) return reply(400, { error: "minutes must be null (until stopped) or 0 to " + MAX_KEEP_AWAKE_MINUTES });
       setKeepAwake(minutes);
@@ -454,10 +460,58 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "127.0.0.1", () => log(`watchdog on ${PORT}, sleep after ${config.sleepAfterSecs}s`));
+// On all interfaces: the VM has no public address, and Agent37's edge lets only requests with the
+// workspace key through to it. The secret above is the second lock.
+server.listen(PORT, "0.0.0.0", () => log(`watchdog on ${PORT}, sleep after ${config.sleepAfterSecs}s`));
+// The heartbeat's target: answers anything, knows nothing.
+createServer((_req, res) => res.writeHead(204).end()).listen(HEARTBEAT_PORT, "0.0.0.0");
+// The wake link's target. Agent37 wakes a sleeping VM for any request to this port's public URL
+// before passing it on; here it holds the machine up long enough to pick it in T3 Code, and says
+// so. Anyone with the link can do that much and nothing more: it reads no input and serves no
+// data. Using the machine still takes the user's own T3 Connect sign-in.
+createServer((req, res) => {
+  if (req.method !== "GET" && req.method !== "HEAD") return res.writeHead(405, { allow: "GET, HEAD" }).end();
+  touch("wake link");
+  res.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+    "x-robots-tag": "noindex",
+  });
+  res.end(req.method === "HEAD" ? undefined : wakePage());
+}).listen(WAKE_PORT, "0.0.0.0");
+
+function wakePage() {
+  const name = (readFileSafe(join(HOME, ".t3agent37", "name")).trim() || "Your machine").replace(
+    /[&<>"']/g,
+    (c) => `&#${c.charCodeAt(0)};`,
+  );
+  const minutes = Math.max(1, Math.round(config.sleepAfterSecs / 60));
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-title" content="Wake ${name}">
+<meta name="color-scheme" content="light dark">
+<title>${name} is awake</title>
+<style>
+  :root { --bg: #fdfaf6; --fg: #1b1622; --muted: #7a6872; --accent: #c2581f; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #141117; --fg: #f6efe6; --muted: #c5a58a; --accent: #ffb547; } }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--fg);
+    font: 16px/1.45 -apple-system, system-ui, sans-serif; }
+  main { padding: 24px; max-width: 360px; }
+  h1 { margin: 0 0 8px; font-size: 26px; letter-spacing: -0.02em; }
+  h1::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 10px; background: var(--accent); vertical-align: middle; }
+  p { margin: 0; color: var(--muted); }
+</style></head>
+<body><main><h1>${name} is awake</h1>
+<p>Open T3 Code and pick ${name}. It stays up for ${minutes} minutes, and for as long as you use it.</p></main></body></html>`;
+}
 // One tick at a time: a slow T3 check must never finish after a newer tick started a stop.
 async function loop() {
   await tick().catch((e) => log("tick failed", e.message));
+  heartbeat();
   setTimeout(loop, TICK_MS);
 }
 loop();

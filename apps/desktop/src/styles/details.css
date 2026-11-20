@@ -43,16 +43,16 @@ button.row-name {
   cursor: pointer;
 }
 
-.ocean-hits {
+.rooftop-hits {
   pointer-events: none;
 }
-/* one boat's footprint at the sea's zoom */
-.ocean-hit {
+/* one agent's footprint at the roof's zoom */
+.rooftop-hit {
   position: absolute;
   left: 0;
   top: 0;
-  width: calc(20px * var(--sea-scale));
-  height: calc(22px * var(--sea-scale));
+  width: calc(14px * var(--roof-scale));
+  height: calc(17px * var(--roof-scale));
   padding: 0;
   border: 0;
   background: none;
@@ -68,7 +68,7 @@ button.row-name {
   padding-bottom: 16px;
 }
 
-/* glance: the boat, what it's doing, what it costs — one framed card */
+/* glance: the agent, what it's doing, what it costs — one framed card */
 .glance {
   flex: none;
   border: 1px solid var(--line);
@@ -80,14 +80,14 @@ button.row-name {
   gap: 14px;
   padding: 12px;
 }
-.glance-boat {
+.glance-spy {
   display: grid;
   place-items: center;
   width: 80px;
   height: 70px;
   background: var(--panel);
 }
-.glance-boat .boat-icon {
+.glance-spy .spy-icon {
   width: 72px;
   height: 63px;
 }
@@ -260,6 +260,14 @@ button.row-name {
 }
 .line-dim {
   color: var(--muted);
+}
+/* a sentence about the line above it: wraps instead of cutting off */
+.line-note {
+  padding: 7px 0;
+  overflow: visible;
+  white-space: normal;
+  font-size: 12px;
+  line-height: 1.4;
 }
 .line-status {
   display: inline-flex;

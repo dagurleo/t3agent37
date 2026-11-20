@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { call, errorText, useUiState } from "./api";
 import type { LocalProject, McpClient, MachineView, SetupAction, UiState } from "./types";
 import { machineKey, type Action } from "./machine";
-import { Ocean, type OceanBoat } from "./components/Ocean";
+import { Rooftop, type RooftopAgent } from "./components/Rooftop";
 import { MachineRow } from "./components/MachineRow";
 import { NewMachine } from "./components/NewMachine";
 import { SettingsView } from "./components/SettingsView";
@@ -38,14 +38,14 @@ export default function App() {
   if (loadError) {
     body = (
       <div className="view center">
-        <p className="lede">Couldn't reach t3boat: {loadError}</p>
+        <p className="lede">Couldn't reach t3agent37: {loadError}</p>
         <button className="btn btn-solid" onClick={retry}>
           Try again
         </button>
       </div>
     );
   } else if (!state) {
-    body = <Ocean boats={[]} />;
+    body = <Rooftop agents={[]} />;
   } else if (state.setup !== "ready") {
     body = <Setup state={state} onError={show} />;
   } else {
@@ -73,19 +73,20 @@ function without<T>(record: Record<string, T>, key: string): Record<string, T> {
 function Brand() {
   return (
     <div className="brand">
-      <span className="brand-name">t3boat</span>
+      <span className="brand-name">t3agent37</span>
     </div>
   );
 }
 
 function Setup({ state, onError }: { state: UiState; onError: (t: string) => void }) {
   const act = (action: SetupAction) => call("setup_action", { action }).catch((e) => onError(errorText(e)));
+  const saveKey = (key: string) => call("save_api_key", { key }).catch((e) => onError(errorText(e)));
   return (
     <>
-      <Ocean boats={[{ key: "setup", name: "t3boat", state: "creating" }]}>
+      <Rooftop agents={[{ key: "setup", name: "t3agent37", state: "creating" }]}>
         <Brand />
-      </Ocean>
-      <SetupView setup={state.setup} busy={state.setupBusy} signInCode={state.signInCode} onAction={act} />
+      </Rooftop>
+      <SetupView setup={state.setup} busy={state.setupBusy} onAction={act} onSaveKey={saveKey} />
     </>
   );
 }
@@ -109,8 +110,8 @@ function Ready({ state, toast }: { state: UiState; toast: (t: string, tone?: "er
     if (detailsId && !selected) setView("list");
   }, [detailsId, selected]);
 
-  const boats: OceanBoat[] = useMemo(() => {
-    const list: OceanBoat[] = state.machines.map((m) => ({
+  const agents: RooftopAgent[] = useMemo(() => {
+    const list: RooftopAgent[] = state.machines.map((m) => ({
       key: machineKey(m),
       name: m.name,
       state: m.state,
@@ -168,6 +169,15 @@ function Ready({ state, toast }: { state: UiState; toast: (t: string, tone?: "er
           await call("turn_on_connect", { id: m.id });
           toast(`${m.name} is reachable from your other devices`, "info");
           return;
+        case "wake_link":
+          await call("wake_link", { id: m.id, renew: a.renew });
+          toast(
+            a.renew
+              ? "New wake link copied. The old one no longer works."
+              : `Wake link copied. Open it on your phone to wake ${m.name}.`,
+            "info",
+          );
+          return;
         case "keep_awake":
           await call("keep_awake", { id: m.id, minutes: a.minutes });
           return;
@@ -193,17 +203,17 @@ function Ready({ state, toast }: { state: UiState; toast: (t: string, tone?: "er
 
   return (
     <>
-      <Ocean
-        boats={boats}
+      <Rooftop
+        agents={agents}
         active={view === "new" ? "__draft" : selected ? machineKey(selected) : hover}
         compact={view !== "list"}
         onPick={view === "new" ? undefined : pick}
       >
         <Brand />
-        <button className="btn btn-icon btn-on-sea" onClick={() => setView("settings")} aria-label="Settings">
+        <button className="btn btn-icon btn-on-sky" onClick={() => setView("settings")} aria-label="Settings">
           <Icon name="sliders" />
         </button>
-      </Ocean>
+      </Rooftop>
 
       {selected ? (
         <MachineDetails
@@ -237,7 +247,7 @@ function Ready({ state, toast }: { state: UiState; toast: (t: string, tone?: "er
               <h1 className="display">No machines yet</h1>
               <p className="lede">
                 A machine is a cloud computer your T3 Code agents work on. It sleeps when nobody's working, and
-                sleeping is free.
+                then only its disk is billed.
               </p>
               <button className="btn btn-solid btn-lg" onClick={() => setView("new")}>
                 <Icon name="plus" /> New machine

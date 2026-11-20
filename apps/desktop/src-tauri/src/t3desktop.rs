@@ -29,15 +29,15 @@ fn home() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("no home directory"))
 }
 
-/// What t3boat may do on the desktop app's server: read its projects and their files.
+/// What t3agent37 may do on the desktop app's server: read its projects and their files.
 const LOCAL_SCOPES: &[&str] = &["orchestration:read", "filesystem:read"];
 
 #[derive(Clone, Debug)]
 pub struct T3Desktop {
     /// The `t3` launcher the desktop app writes into `~/.t3/bin`; it runs the app's bundled CLI.
     cli: PathBuf,
-    /// Where t3boat keeps its session on the desktop app's server (T3 Code lists it under
-    /// Settings → Connections as "t3boat"). Set by the app before any API call.
+    /// Where t3agent37 keeps its session on the desktop app's server (T3 Code lists it under
+    /// Settings → Connections as "t3agent37"). Set by the app before any API call.
     token_file: Option<PathBuf>,
     /// Held across read-or-issue so overlapping calls share one session.
     token: Arc<tokio::sync::Mutex<Option<String>>>,
@@ -192,7 +192,7 @@ impl T3Desktop {
         .await
     }
 
-    /// Runs `f` against the running desktop server with t3boat's session, issuing a new one
+    /// Runs `f` against the running desktop server with t3agent37's session, issuing a new one
     /// when there is none or the server no longer knows it (the user revoked it).
     async fn authorized<T, F: Future<Output = Result<T>>>(&self, f: impl Fn(String, String) -> F) -> Result<T> {
         let origin = local_origin()?;
@@ -210,13 +210,13 @@ impl T3Desktop {
             return Ok(token.to_owned());
         }
         let mut cmd = command(&self.cli);
-        cmd.args(["auth", "session", "issue", "--token-only", "--ttl", "3650d", "--label", "t3boat"]);
+        cmd.args(["auth", "session", "issue", "--token-only", "--ttl", "3650d", "--label", "t3agent37"]);
         for scope in LOCAL_SCOPES {
             cmd.args(["--scope", scope]);
         }
         let out = cmd.output().await.context("running t3 auth session issue")?;
         if !out.status.success() {
-            bail!("T3 Code refused t3boat a session: {}", String::from_utf8_lossy(&out.stderr).trim());
+            bail!("T3 Code refused t3agent37 a session: {}", String::from_utf8_lossy(&out.stderr).trim());
         }
         let token = String::from_utf8_lossy(&out.stdout).trim().to_owned();
         if let Some(path) = &self.token_file {
@@ -238,7 +238,7 @@ struct Unauthorized;
 
 impl std::fmt::Display for Unauthorized {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("T3 Code did not accept t3boat's session")
+        f.write_str("T3 Code did not accept t3agent37's session")
     }
 }
 
@@ -255,12 +255,12 @@ fn local_origin() -> Result<String> {
 mod tests {
     use super::*;
 
-    /// Against the running desktop app, with t3boat's own session file:
+    /// Against the running desktop app, with t3agent37's own session file:
     /// `cargo test reads_the_desktop_projects -- --ignored --nocapture`.
     #[tokio::test]
     #[ignore]
     async fn reads_the_desktop_projects() {
-        let dir = dirs::data_dir().unwrap().join("dev.t3boat.app");
+        let dir = dirs::data_dir().unwrap().join("dev.t3agent37.app");
         let t3 = T3Desktop::locate().unwrap().with_token_file(dir.join("t3-token"));
         let projects = t3.projects().await.unwrap();
         assert!(!projects.is_empty());

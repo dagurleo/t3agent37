@@ -9,19 +9,23 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Machine {
-    /// Never changes: the id of the sandbox the machine was created on.
+    /// Never changes: the id of the Agent37 instance the machine was created on.
     pub id: String,
-    /// Boat sandbox it runs on now, e.g. `bx_sad32u26`: another one after a restore.
+    /// Agent37 instance it runs on, e.g. `ab12cd34ef`. The same as `id`: Agent37 keeps a disk
+    /// until the instance is deleted, so a machine never moves to another one.
     pub sandbox_id: String,
     pub name: String,
     pub size: String,
-    /// Public HTTPS URL of the T3 server on the sandbox.
+    /// HTTPS URL of the T3 server on the VM, through Agent37's edge (which wants the key).
     pub upstream_url: String,
     /// Bearer token the proxy uses upstream. Never leaves this computer except to that server.
     pub upstream_token: String,
-    /// Public HTTPS URL of the watchdog on the sandbox.
+    /// HTTPS URL of the watchdog on the VM, through Agent37's edge.
     pub watchdog_url: String,
     pub watchdog_secret: String,
+    /// The VM's public heartbeat URL, which its watchdog calls to hold off Agent37's auto-sleep.
+    #[serde(default)]
+    pub heartbeat_url: String,
     /// Loopback port the proxy serves this machine on. Stable, T3 Code stores it.
     pub local_port: u16,
     /// T3 server version installed on the machine.
@@ -42,6 +46,12 @@ pub struct Machine {
     /// T3 Connect is on there: other devices reach it with the user's T3 account.
     #[serde(default)]
     pub connect: bool,
+    /// The GitHub account the machine's gh (and so its git) is signed in to, as last checked.
+    #[serde(default)]
+    pub github_login: Option<String>,
+    /// Whether `github_login` was ever checked: unchecked, None means "don't know yet".
+    #[serde(default)]
+    pub github_checked: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -64,8 +74,8 @@ impl Default for Settings {
     }
 }
 
-/// One sandbox's spend as last looked up. Kept after the sandbox is gone (its machine deleted, or
-/// a restore replaced it) so the totals still count it until its month is over.
+/// One instance's spend as last looked up. Kept after the instance is gone (its machine deleted)
+/// so the totals still count it until its month is over.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Spend {
@@ -85,12 +95,12 @@ pub struct Spend {
 pub struct State {
     pub machines: Vec<Machine>,
     pub settings: Settings,
-    /// By sandbox id.
+    /// By instance id.
     pub spend: HashMap<String, Spend>,
     /// Local ports of deleted machines, never given out again: T3 Code may still list one (it
     /// cannot be told to forget a backend), and would reach a new machine there as the old.
     pub retired_ports: Vec<u16>,
-    /// Sandboxes of creates still running: deleted at the next start if the app quit or crashed
+    /// Instances of creates still running: deleted at the next start if the app quit or crashed
     /// before the create finished.
     pub pending_sandboxes: Vec<String>,
 }

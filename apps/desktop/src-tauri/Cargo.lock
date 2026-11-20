@@ -4028,7 +4028,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "t3boat"
+name = "t3agent37"
 version = "0.1.0"
 dependencies = [
  "anyhow",

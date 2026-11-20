@@ -24,6 +24,8 @@ pub async fn connect(base_url: &str, token: &str, target: &str) -> Result<Upstre
     let mut req = format!("{ws_base}{target}").into_client_request()?;
     req.headers_mut()
         .insert("authorization", HeaderValue::from_str(&format!("Bearer {token}"))?);
+    // Agent37's edge wants the workspace key on top of T3's own token.
+    crate::agent37::authorize_ws(&mut req);
     let (ws, _) = tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async(req))
         .await
         .context("upstream connect timed out")??;
