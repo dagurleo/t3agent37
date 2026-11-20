@@ -1,8 +1,9 @@
 //! The Objective-C side (`src/macos/shell.m`): the menu-bar item, the panel under it,
-//! notifications and the login item.
+//! notifications, the login item and updates (Sparkle).
 
 use std::ffi::{CString, c_void};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::channel::mpsc::UnboundedSender;
 use gpui_kit::Window;
@@ -28,6 +29,8 @@ unsafe extern "C" {
     fn t3a_login_item_on() -> bool;
     fn t3a_login_item_set(on: bool) -> i32;
     fn t3a_reduce_motion() -> bool;
+    fn t3a_updates_start() -> bool;
+    fn t3a_updates_check() -> bool;
 }
 
 static CLICKS: OnceLock<UnboundedSender<Click>> = OnceLock::new();
@@ -116,4 +119,25 @@ pub fn set_login_item(on: bool) -> Result<(), String> {
 
 pub fn reduce_motion() -> bool {
     unsafe { t3a_reduce_motion() }
+}
+
+static UPDATES: AtomicBool = AtomicBool::new(false);
+
+/// Starts Sparkle, if this build has it and is set up for updates (a release, or a bundle built
+/// with the signing key in the keychain), and adds "Check for Updates…" to the menu-bar item's
+/// menu. Call after [`install_status_item`]. Whether updates are on.
+pub fn start_updates() -> bool {
+    let on = unsafe { t3a_updates_start() };
+    UPDATES.store(on, Ordering::Relaxed);
+    on
+}
+
+/// Whether this build updates itself.
+pub fn updates_on() -> bool {
+    UPDATES.load(Ordering::Relaxed)
+}
+
+/// Looks for an update now, in Sparkle's window. False if updates are off.
+pub fn check_for_updates() -> bool {
+    unsafe { t3a_updates_check() }
 }

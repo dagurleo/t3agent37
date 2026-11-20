@@ -74,6 +74,9 @@ fn main() {
 
         let (clicks, mut clicked) = unbounded();
         macos::install_status_item(clicks);
+        if macos::start_updates() {
+            tracing::info!("updates on");
+        }
         cx.spawn(async move |cx| {
             while let Some(click) = clicked.next().await {
                 cx.update(|cx| match click {

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { REPO } from "./links";
 
-const PROMPT = `Please build and install t3agent37 (${REPO}) on my Mac: clone it, follow the Install section of its README (it builds from source with Rust and Xcode's command line tools), and open the app when it's done.`;
+const PROMPT = `Please build and install t3agent37 (${REPO}) on my Mac from source: clone it, follow "Build, install, test" in its CONTRIBUTING.md (it needs Rust and Xcode's command line tools), and run scripts/bundle-macos.sh --install in apps/desktop.`;
 
-const LABELS = { idle: "Let your agent install it", copied: "Prompt copied. Paste it", failed: "Couldn't copy" };
+const LABELS = { idle: "Let your agent build it", copied: "Prompt copied. Paste it", failed: "Couldn't copy" };
 
 /** Copies a prompt that has the user's coding agent build and install t3agent37 from source. */
 export function InstallButton() {

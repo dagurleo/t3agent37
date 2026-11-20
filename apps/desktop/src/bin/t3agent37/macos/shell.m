@@ -1,6 +1,6 @@
-// What AppKit gives only to Objective-C: the menu-bar item, the panel under it, notifications
-// and the login item. The status item follows F2's status.m; presenting the panel follows
-// F2's panel.m.
+// What AppKit gives only to Objective-C: the menu-bar item, the panel under it, notifications,
+// the login item and updates. The status item follows F2's status.m; presenting the panel
+// follows F2's panel.m; updates, F2's updates.m.
 //
 // A left click on the item calls back with T3A_TOGGLE; a right (or control) click opens its
 // menu, whose items call back with their tag.
@@ -9,10 +9,13 @@
 #import <QuartzCore/QuartzCore.h>
 #import <ServiceManagement/ServiceManagement.h>
 #import <UserNotifications/UserNotifications.h>
+#import <objc/message.h>
 
 typedef void (*t3a_clicked)(int32_t what);
 
 enum { T3A_TOGGLE = 0, T3A_OPEN = 1, T3A_QUIT = 2 };
+
+bool t3a_updates_check(void);
 
 static NSStatusItem *status_item;
 static NSMenu *status_menu;
@@ -43,6 +46,10 @@ static BOOL has_anchor = NO;
 
 - (void)choose:(NSMenuItem *)item {
     self.clicked((int32_t)item.tag);
+}
+
+- (void)checkForUpdates:(id)sender {
+    t3a_updates_check();
 }
 
 // Left clicks go back to the button's action once the menu is closed.
@@ -198,4 +205,51 @@ int t3a_login_item_set(bool on) {
 // Is Reduce motion on? The rooftop then holds still.
 bool t3a_reduce_motion(void) {
     return NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+}
+
+// Updates: Sparkle, loaded from the app's Frameworks when the build has it (a bundle made by
+// scripts/bundle-macos.sh does; `cargo run` doesn't) and Info.plist says where updates are and
+// what they're signed with. Its own window and checks, once a day. Whether it's on. Puts "Check
+// for Updates…" in the menu-bar item's menu, so call it after t3a_status_install.
+static id updater;
+
+bool t3a_updates_start(void) {
+    @autoreleasepool {
+        NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+        if ([info[@"SUFeedURL"] length] == 0 || [info[@"SUPublicEDKey"] length] == 0) {
+            return false;
+        }
+        NSString *path = [NSBundle.mainBundle.privateFrameworksPath stringByAppendingPathComponent:@"Sparkle.framework"];
+        NSBundle *sparkle = [NSBundle bundleWithPath:path];
+        NSError *error = nil;
+        if (!sparkle || ![sparkle loadAndReturnError:&error]) {
+            NSLog(@"Sparkle didn't load: %@", error);
+            return false;
+        }
+        Class controller = NSClassFromString(@"SPUStandardUpdaterController");
+        if (!controller) {
+            return false;
+        }
+        SEL make = NSSelectorFromString(@"initWithStartingUpdater:updaterDelegate:userDriverDelegate:");
+        updater = ((id(*)(id, SEL, BOOL, id, id))objc_msgSend)([controller alloc], make, YES, nil, nil);
+        if (updater && status_menu) {
+            NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Check for Updates…" action:@selector(checkForUpdates:) keyEquivalent:@""];
+            item.target = status_target;
+            [status_menu insertItem:item atIndex:1];
+        }
+        return updater != nil;
+    }
+}
+
+// Look for an update now, with Sparkle's window in front. False if updates are off. (On the
+// next turn of the main loop: it's called from inside GPUI too.)
+bool t3a_updates_check(void) {
+    if (!updater) {
+        return false;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [NSApp activateIgnoringOtherApps:YES];
+      ((void (*)(id, SEL, id))objc_msgSend)(updater, NSSelectorFromString(@"checkForUpdates:"), nil);
+    });
+    return true;
 }

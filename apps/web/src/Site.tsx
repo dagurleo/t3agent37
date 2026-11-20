@@ -4,6 +4,7 @@ import { Hero } from "./Hero";
 import { Relay } from "./Relay";
 import { Pricing } from "./Pricing";
 import { InstallButton } from "./InstallButton";
+import { DownloadButton } from "./DownloadButton";
 import { AppleMark, GitHubMark, T3CodeMark } from "./logos";
 import { AGENT37, REPO, T3BOAT, T3CODE } from "./links";
 
@@ -26,10 +27,10 @@ function Wordmark({ withIcon = false }: { withIcon?: boolean }) {
   );
 }
 
-/** How to build it by hand, as the README's Install section has it. */
+/** How to build it by hand, as CONTRIBUTING.md has it. */
 const BUILD = `git clone ${REPO}
 cd t3agent37/apps/desktop
-scripts/bundle-macos.sh --open`;
+scripts/bundle-macos.sh --install`;
 
 export function Site() {
   return (
@@ -63,10 +64,10 @@ export function Site() {
           only their disk, so you pay for compute only while your agents run.
         </p>
         <div className="hero-cta">
-          <InstallButton />
-          <span className="hero-meta" data-ai-content="macOS 13 or later. Build from source.">
+          <DownloadButton />
+          <span className="hero-meta" data-ai-content="macOS 13 or later. Free and open source.">
             <MacOnly className="hero-os" />
-            <span>Build from source</span>
+            <span>Free and open source</span>
           </span>
         </div>
       </Hero>
@@ -94,18 +95,18 @@ export function Site() {
             </a>
             <span>A Cloud account and an API key. The key stays on your Mac, never on a machine.</span>
           </li>
-          <li data-ai-content="A Mac on macOS 13 or later, with Rust and Xcode's command line tools to build it">
+          <li data-ai-content="A Mac on macOS 13 or later">
             <MacOnly className="needs-logo needs-os" />
-            <span>A Mac, with Rust and Xcode's command line tools to build it</span>
+            <span>A Mac. Apple silicon or Intel.</span>
           </li>
         </ul>
 
         <div className="build">
           <div className="build-copy">
-            <h3>Build it from source</h3>
+            <h3>Or build it from source</h3>
             <p>
-              There's no prebuilt download yet. Hand the job to your coding agent, or run the build yourself: the app lands
-              in your menu bar.
+              The download is signed and notarized by Apple, and updates itself. To build it yourself instead, hand the job
+              to your coding agent or run the build: it needs Rust and Xcode's command line tools.
             </p>
             <InstallButton />
           </div>

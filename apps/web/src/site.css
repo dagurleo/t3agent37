@@ -267,6 +267,7 @@ h1 {
   color: var(--install-fg);
   box-shadow: var(--install-shadow);
   font: 500 14px/1 var(--font-body);
+  text-decoration: none;
   cursor: pointer;
   transition:
     transform 120ms ease,

@@ -104,6 +104,29 @@ impl Panel {
             .child(buttons)
             .child(mcp_hint);
 
+        let updates_on = crate::macos::updates_on();
+        let version = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(8.))
+            .py(px(11.))
+            .border_t_1()
+            .border_color(tk.line)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(div().font_weight(FontWeight(560.)).child(format!("t3agent37 {}", env!("CARGO_PKG_VERSION"))))
+                    .child(kit::hint(if updates_on { "Looks for updates once a day" } else { "This build doesn't update itself" }, &tk)),
+            )
+            .when(updates_on, |d| {
+                d.child(kit::button("check-updates", Btn::Outline, Size::Sm, false, &tk).child("Check now").on_click(|_, _, _| {
+                    crate::macos::check_for_updates();
+                }))
+            });
+
         let account = state.account.as_ref().map(|a| {
             if a.past_due {
                 "Agent37 · past due: top up to wake machines".to_string()
@@ -131,7 +154,8 @@ impl Panel {
                     .overflow_y_scroll()
                     .child(kit::hint("Machines sleep 5 minutes after their agents finish and wake by themselves when you use them in T3 Code.", &tk).pb(px(7.)))
                     .child(login)
-                    .child(mcp),
+                    .child(mcp)
+                    .child(version),
             )
             .child(
                 div()
