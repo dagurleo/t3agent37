@@ -1,0 +1,87 @@
+# A release: pushing a tag v<version> (the version in apps/desktop/Cargo.toml) builds t3agent37
+# for Apple silicon and Intel, signs it with the Developer ID, has Apple notarize it, and
+# publishes the DMG and Sparkle's appcast.xml as that tag's GitHub release
+# (apps/desktop/scripts/release-macos.sh --publish).
+#
+# The keys are the `release` environment's secrets, given only to runs for v* tags, and only once
+# the maintainer approves the run (Settings > Environments > release). Nothing from other runs
+# comes in: no build cache, and no actions but GitHub's own checkout, pinned to its commit.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release
+    runs-on: macos-latest
+    environment: release
+    permissions:
+      contents: write # the tag's GitHub release
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # (the build number is the commit count)
+          persist-credentials: false
+
+      - name: The tag is Cargo.toml's version
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [ "$GITHUB_REF_NAME" = "v$VERSION" ] || { echo "the tag is $GITHUB_REF_NAME, but Cargo.toml says $VERSION"; exit 1; }
+
+      - name: Rust, for Apple silicon and Intel
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-apple-darwin
+
+      - name: Keys
+        env:
+          CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          KEYS="$RUNNER_TEMP/keys"
+          mkdir -m 700 "$KEYS"
+          # The Developer ID, in a keychain of its own for this run, which codesign may use
+          # without asking.
+          KEYCHAIN="$KEYS/signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 7200 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          printf '%s' "$CERTIFICATE_P12" | base64 -d > "$KEYS/certificate.p12"
+          security import "$KEYS/certificate.p12" -k "$KEYCHAIN" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$KEYS/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          # notarytool's App Store Connect key, and Sparkle's update key.
+          printf '%s\n' "$NOTARY_KEY_P8" > "$KEYS/notary.p8"
+          printf '%s\n' "$SPARKLE_PRIVATE_KEY" > "$KEYS/update-key"
+          echo "KEYS=$KEYS" >> "$GITHUB_ENV"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: Build, notarize and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: NOTARY_KEY="$KEYS/notary.p8" SPARKLE_KEY_FILE="$KEYS/update-key" scripts/release-macos.sh --publish
+
+      - name: Clean up the keys
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN:-}" ]; then security delete-keychain "$KEYCHAIN" || true; fi
+          if [ -n "${KEYS:-}" ]; then rm -rf "$KEYS"; fi

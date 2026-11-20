@@ -83,10 +83,11 @@ cp icons/icon.icns "$APP/Contents/Resources/AppIcon.icns"
 ditto "$SPARKLE/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 rm -rf "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" "$APP/Contents/Frameworks/Sparkle.framework/XPCServices"
 
-# Updates: where to look, and the key their archives are signed with. (Without the key,
+# Updates: where to look, and the key their archives are signed with: SPARKLE_PUBLIC_KEY (as a
+# release on GitHub's runners gives it), else the one in your keychain. (Without one there,
 # generate_keys prints its error where the key would be: keep only a key, 32 bytes in base64.)
 UPDATES=""
-PUBLIC_KEY=$("$SPARKLE/bin/generate_keys" --account "$SPARKLE_ACCOUNT" -p 2>/dev/null | grep -E '^[A-Za-z0-9+/]{43}=$' || true)
+PUBLIC_KEY=${SPARKLE_PUBLIC_KEY:-$("$SPARKLE/bin/generate_keys" --account "$SPARKLE_ACCOUNT" -p 2>/dev/null | grep -E '^[A-Za-z0-9+/]{43}=$' || true)}
 if [ -n "$FEED_URL" ] && [ -n "$PUBLIC_KEY" ]; then
     UPDATES="<key>SUFeedURL</key><string>$FEED_URL</string>
     <key>SUPublicEDKey</key><string>$PUBLIC_KEY</string>

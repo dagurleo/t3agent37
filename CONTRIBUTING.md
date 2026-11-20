@@ -39,10 +39,26 @@ cargo run --bin t3agent37-dev       # the backend alone, driven from stdin (see 
 
 ## Releasing
 
-`apps/desktop/scripts/release-macos.sh` makes a release: built for Apple silicon and Intel, signed with a Developer ID, notarized and stapled, in `t3agent37.dmg`, with Sparkle's `appcast.xml` signed by t3agent37's update key. `--publish` tags `v<version>` and puts both files on a GitHub release.
+A release is built for Apple silicon and Intel, signed with a Developer ID, notarized and stapled, in `t3agent37.dmg`, with Sparkle's `appcast.xml` signed by t3agent37's update key, and published as a GitHub release. `apps/desktop/scripts/release-macos.sh --publish` does all of it, on GitHub's runners or on a Mac.
 
-- **One-time setup** (notary credentials, Sparkle's key, Rust's Intel target, `gh auth login`) is in the script's header. The update key lives in the maintainer's keychain; keep a copy of it safe (`generate_keys --account t3agent37 -x <file>`): without it no installed copy can be updated again.
-- **Each release:** bump `version` in `apps/desktop/Cargo.toml`, commit and push, then run `scripts/release-macos.sh --publish` in `apps/desktop`. Without `--publish` it builds and notarizes into `target/release/dist` only.
+**Each release:** bump `version` in `apps/desktop/Cargo.toml`, commit and push, then push its tag:
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The Release workflow (`.github/workflows/release.yml`) then builds and publishes it in about half an hour, once you approve the run in the Actions tab.
+
+- **Its keys** are secrets of the repo's `release` environment, which only runs for `v*` tags and waits for the maintainer's approval:
+
+  | secret | what |
+  |---|---|
+  | `MACOS_CERTIFICATE_P12`, `MACOS_CERTIFICATE_PASSWORD` | a Developer ID Application certificate with its private key, exported as `.p12` (in base64) and its password. A certificate of its own for CI, not the one that signs F2, so revoking it if it leaked breaks nothing else. |
+  | `NOTARY_KEY_P8`, `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID` | an App Store Connect API key for notarization (Users and Access > Integrations > Team Keys, Developer access): the `.p8` file's text, its key ID and the issuer ID |
+  | `SPARKLE_PRIVATE_KEY` | the update key, as `generate_keys --account t3agent37 -x` writes it |
+
+- **The update key** is the one thing that can't be replaced: every installed copy accepts only updates signed with it. Keep a copy in a password manager. `release-macos.sh` checks the key it's given against the public half shipped in the app (`UPDATE_KEY`) before building.
+- **On a Mac instead** (the fallback): the one-time setup is in the script's header, then `scripts/release-macos.sh --publish` in `apps/desktop`. It pushes the tag itself, which starts the workflow too: reject that run. Without `--publish` it builds and notarizes into `target/release/dist` only.
 - **How updates reach people:** the app (Sparkle 2.10, in `Contents/Frameworks`, loaded by `shell.m`) checks `https://github.com/dagurleo/t3agent37/releases/latest/download/appcast.xml` once a day, and "Check for Updates…" in the menu-bar item's menu or Settings checks now. The site's download button links to `releases/latest/download/t3agent37.dmg`. Both rely on every release having those two files under those names.
 - **Build numbers** are commit counts on `main`, so they only go up. Sparkle compares them.
 - **The site's download button** points at the latest release, so deploy the site (`bun run deploy` in `apps/web`) only once the first release is out.
@@ -79,7 +95,9 @@ apps/desktop/                 the app: one Rust package (library = the backend, 
   docs/                       architecture, T3 protocol spec
 apps/web/                     the site, t3agent37.dagurleo.com (React 19 + Vite, prerendered): see "The site" below
   src/panel/                  the React port of the panel, restored from 41635c4, on its mock backend only
-.github/workflows/ci.yml      on each pull request and push to main: the app's tests on a Mac, and the site's build
+.github/workflows/
+  ci.yml                      on each pull request and push to main: the app's tests on a Mac, and the site's build
+  release.yml                 on a v* tag: the signed, notarized release (see "Releasing")
 ```
 
 ## The site
