@@ -4,8 +4,6 @@
   "workspaces": ["apps/*"],
   "scripts": {
     "dev": "bun --filter @t3boat/web dev",
-    "dev:desktop": "bun --filter @t3boat/desktop tauri dev",
-    "build": "bun --filter '*' build",
-    "build:desktop": "bun --filter @t3boat/desktop tauri build"
+    "build": "bun --filter '*' build"
   }
 }

@@ -1,0 +1,52 @@
+[package]
+name = "t3agent37"
+version = "0.1.0"
+description = "Auto-sleeping T3 Code remote machines on your Agent37 Cloud account"
+license = "MIT"
+edition = "2024"
+publish = false
+default-run = "t3agent37"
+
+# The backend: Agent37, the machines, the T3 proxy, MCP. UI-agnostic; the menu-bar app
+# (src/bin/t3agent37) and the headless dev driver (src/bin/t3agent37-dev.rs) both run it.
+[lib]
+name = "t3agent37_lib"
+
+[dependencies]
+# backend
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "6"
+which = "7"
+rand = "0.8"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+url = "2"
+urlencoding = "2"
+bytes = "1"
+sha2 = "0.10"
+# the menu-bar app
+gpui-kit = "0.10.0"
+raw-window-handle = "0.6"
+futures = "0.3"
+image = { version = "0.25", default-features = false }
+
+[build-dependencies]
+cc = "1"
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true

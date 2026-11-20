@@ -10,13 +10,14 @@ t3agent37 is a fork of [t3boat](https://github.com/paukraft/t3boat) by Pau Kraft
 
 What was kept and what changed:
 
-- **Kept from t3boat:** the localhost proxy (`apps/desktop/src-tauri/src/proxy`), changed by two lines in `upstream.rs` to send the Agent37 key. It keeps T3 Code working while a machine sleeps, so most of the hard T3 protocol work is Pau Kraft's. `apps/desktop/docs/t3-protocol.md` is t3boat's spec of that protocol.
+- **Kept from t3boat:** the localhost proxy (`apps/desktop/src/proxy`), changed by two lines in `upstream.rs` to send the Agent37 key. It keeps T3 Code working while a machine sleeps, so most of the hard T3 protocol work is Pau Kraft's. `apps/desktop/docs/t3-protocol.md` is t3boat's spec of that protocol.
 - **New:** everything that talks to the cloud. `agent37.rs` replaces `boat.rs`. It covers how a machine boots, how it decides to sleep and how costs are read, because Agent37 VMs differ from Boat sandboxes in ways that mattered (see [Agent37 behaviors](#agent37-behaviors-verified-live)).
 - **Added on top:**
   - Restarting T3 after the T3 Connect sign-in.
   - A wake link, so a phone can wake a machine.
   - Claude Code's full-access mode working as root.
   - A new look: "field agents" on a rooftop instead of boats.
+  - A native panel drawn with [GPUI](https://gpui.rs) in place of t3boat's Tauri webview, so there's no JavaScript in the app (see [The panel](#the-panel)).
 
 ## What you get
 
@@ -31,19 +32,18 @@ What was kept and what changed:
 
 - [T3 Code](https://t3.codes) desktop app
 - An [Agent37 Cloud](https://www.agent37.com) account and an API key from [its dashboard](https://www.agent37.com/dashboard/cloud/api-keys). The key stays on this computer (in the app's data folder, readable by you only) and is never copied to a machine.
-- macOS, Windows or Linux. Only macOS has been run so far.
+- macOS 13 or later. (The panel is GPUI, which runs on Windows and Linux too, but the menu-bar item and the panel's placement are macOS code for now.)
 
 ## Install
 
-There is no prebuilt download. Build from source with [Rust](https://rustup.rs) and [Bun](https://bun.sh). Windows also needs the [Microsoft C++ Build Tools](https://v2.tauri.app/start/prerequisites/#windows), Linux [Tauri's system packages](https://v2.tauri.app/start/prerequisites/#linux).
+There is no prebuilt download. Build from source with [Rust](https://rustup.rs) (rustup fetches the 1.99 toolchain the app pins) and Xcode's command line tools.
 
 ```sh
-cd t3agent37
-bun install
-bun run build:desktop
+cd t3agent37/apps/desktop
+scripts/bundle-macos.sh --open
 ```
 
-The app lands in `apps/desktop/src-tauri/target/release/bundle/` (`macos/t3agent37.app` on macOS). It lives in the menu bar or system tray, and can run next to t3boat.
+The app lands in `apps/desktop/target/release/bundle/t3agent37.app`, signed ad hoc for this Mac, and `--open` starts it. It lives in the menu bar and can run next to t3boat.
 
 ## Usage
 
@@ -85,7 +85,7 @@ T3 Code ──ws──> localhost proxy (t3agent37) ──https/wss + key──>
 - **T3 Code talks to the machine through a local proxy** at `http://localhost:<port>`, one per machine. The proxy adds the Agent37 key on the way out. While the machine sleeps, the proxy answers T3 Code from what it recorded, so opening a chat doesn't wake the machine. A real request, such as sending a message, wakes it.
 - **A watchdog on the VM decides when to sleep:** 5 minutes after the last agent turn and the last use. It works out "idle" itself, so work finishes even with the laptop closed. It holds Agent37's auto-sleep off with a heartbeat until it is idle. Then the app sleeps the VM, or auto-sleep does if the app isn't running.
 
-The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/architecture.md), and the UI ↔ backend contract is in [apps/desktop/docs/ui-contract.md](apps/desktop/docs/ui-contract.md).
+The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/architecture.md).
 
 ## Where things stand (2026-11-20)
 
@@ -98,37 +98,28 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 - T3 Connect from the phone app.
 - The wake link: about 1.3 s from asleep to page, with Connect reachable right after.
 - The redesign, in both themes.
+- The GPUI panel against the real account: the list, the ⋯ menu, details, the project picker, the new machine form (not launched), settings, toasts, dark mode, and a wake and a sleep.
 
 **Not tried yet:**
-- Resize and delete through the app.
-- Windows and Linux.
+- Resize, delete, create, sign-ins, T3 Connect and the wake link from the GPUI panel. (They worked from the Tauri panel; the GPUI one calls the same backend functions.)
+- The GPUI panel's setup view (first run, no key yet).
 - How long T3 Connect takes to come back after a machine has slept for many hours.
 
 **Loose ends:**
-- **Nothing is committed.** The whole port is uncommitted, partly staged changes on top of t3boat's history (last upstream commit `bd488c8`). `origin` still points at `paukraft/t3boat`. The folder above this repo is a T3 Code scratch repo that records `t3agent37` as a gitlink with no `.gitmodules`.
-- **`apps/web` is t3boat's marketing site, not ported.** It no longer builds: it imports `pixel/boat` and `BoatIcon`, which the redesign removed. Either delete it or redo it for t3agent37.
-- **Package names are still `t3boat` / `@t3boat/*`** (root and `apps/desktop` `package.json`, the `bun --filter` scripts). The app itself is t3agent37 everywhere else (bundle id `dev.t3agent37.app`).
+- **Committed locally only.** Branch `t3agent37` has one commit, `8992f61`: the whole port with the Tauri panel, before the switch to GPUI. Everything since is uncommitted. `origin` still points at `paukraft/t3boat`. The folder above this repo is a T3 Code scratch repo that records `t3agent37` as a gitlink with no `.gitmodules`.
+- **`apps/web` is t3boat's marketing site, kept as the baseline for t3agent37's.** It doesn't build: it imports the React panel (`@t3boat/desktop`: its components, pixel engine and mock), which left with Tauri. That code is in `8992f61` (`apps/desktop/src`). Because `apps/web` needs that workspace package, `bun install` at the root fails until the site is redone.
+- **Package names are still `t3boat` / `@t3boat/*`** in the root and `apps/web` `package.json`. The app itself is t3agent37 everywhere else (bundle id `dev.t3agent37.app`).
 - **GitHub sign-in copies its device code to the clipboard.** Copying anything else afterwards loses it. Showing the code in the panel would be better.
 - **T3 Connect's "require approval for new devices" option** is not turned on by the app.
-- **Copy does nothing on Windows and Linux.** The clipboard is `pbcopy` only (`signin.rs`), so "Copy link" and the GitHub code are macOS-only.
+- **The panel has no scrollbars.** Its views scroll, but no bar shows.
 
-**Moving from Tauri to GPUI.** The goal is a native panel with no webview and no JavaScript in the app.
-- [Rune](https://github.com/anomalyco/rune) was looked at first and set aside for now: it has no macOS menu-bar item and is weeks old.
-- [`apps/desktop/src-gpui`](apps/desktop/src-gpui/README.md) is the app on GPUI (gpui-kit 0.10), with every view of the React panel. Its menu-bar and panel code follows [F2](https://github.com/getf2/f2).
-  - It runs the same backend (`src-tauri` built with `--no-default-features`, which leaves out `tray.rs`) on the same data folder.
-  - The rooftop is ported to Rust and pixel-identical to the TypeScript engine.
-- **Checked live on 2026-11-20**, against the real account, in place of the Tauri app:
-  - The machine list, the ⋯ menu, a machine's details, the project picker (T3 Code's projects, filter, arrows), the new machine form (not launched), settings, toasts and dark mode.
-  - Esc closes the innermost thing, then goes back, then hides the panel.
-  - T3 Code reconnected to skiff through its proxy.
-- **Not tried from it yet:**
-  - The commands with side effects: wake, sleep, create, delete, resize, sign-ins, T3 Connect, copying the wake link. They call the same backend functions as `tray.rs`.
-  - The setup view.
-- **Left to do:**
-  - A bundle script like F2's. Notifications and Start at login need it; the Tauri app's autostart LaunchAgent would need removing.
-  - Scrollbars.
-  - Windows and Linux.
-  - Then delete `tray.rs`, the React panel, the Tauri dependencies and the JSON UI contract, and move the backend out of `src-tauri`.
+### The panel
+
+t3boat's panel was a React page in a Tauri webview. t3agent37 drew it natively instead, to get the webview and JavaScript out of the app.
+- [Rune](https://github.com/anomalyco/rune) was looked at first and set aside for now: it had no macOS menu-bar item and was weeks old.
+- [GPUI](https://gpui.rs), through [gpui-kit](https://gpui-kit.com) 0.10, was chosen. The menu-bar item and the panel's placement follow [F2](https://github.com/getf2/f2), a GPUI app for macOS.
+- The React panel was ported view for view, and the rooftop's pixel engine matched the TypeScript one byte for byte (86 pictures). Then Tauri and the React panel were removed on 2026-11-20. Both are in `8992f61`.
+- The panel calls the backend directly; there's no JSON contract in between. The window is hidden, not closed, when the panel goes away, so a sign-in in the browser or a half-typed name is still there on the next click.
 
 ## Notes for future sessions
 
@@ -141,27 +132,24 @@ Read this section before changing anything. Every fact under "verified live" cos
 - **Only touch machines t3agent37 created.** The Agent37 workspace can hold other VMs that aren't this app's.
 - **Don't commit or push unless asked.**
 - **Remember that any request to a sleeping VM's public URL wakes it** (and bills it). Nothing in the app should talk to a sleeping machine unless it means to wake it.
-- **Run one t3agent37 at a time, the Tauri app or the GPUI one.** Both use the same data folder, ports and machines. The GPUI app refuses to start while port 47370 is taken.
+- **Run one t3agent37 at a time.** A second copy would share the data folder, ports and machines, so it refuses to start while port 47370 is taken.
+- **Don't rebuild the binary a running copy runs from.** macOS kills a process whose signed binary changes underneath it (no crash report). Run the bundle, or a copy of `target/debug/t3agent37`.
 
 ### Build, install, test (macOS)
 
 ```sh
 cd apps/desktop
-bun run tauri build --bundles app            # faster than build:desktop (skips the dmg)
-osascript -e 'tell application id "dev.t3agent37.app" to quit'
-open src-tauri/target/release/bundle/macos/t3agent37.app
-
-cd src-tauri && cargo test --lib             # Rust tests
-cd .. && bun run build                       # tsc + vite: type-checks the UI
-bun run dev                                  # UI alone in a browser, on the mock backend (src/mock.ts)
-
-# the GPUI app (quit the Tauri one first)
-cd src-gpui && cargo run -- --open           # Rust 1.99, picked by its rust-toolchain.toml
-cargo test                                   # its tests; the README there has the pixel comparison
+scripts/bundle-macos.sh --open      # release build → target/release/bundle/t3agent37.app; quits the running one, opens it
+cargo run -- --open                 # a debug build, panel open at launch (quit the bundled one first)
+cargo test                          # backend and panel tests
+cargo run --bin t3agent37-dev       # the backend alone, driven from stdin (see the file's header)
 ```
 
-The app runs straight from that bundle path. Nothing is copied to `/Applications`.
+The app runs straight from the bundle path. Nothing is copied to `/Applications`.
 
+- **Toolchain:** Rust 1.99, picked by `apps/desktop/rust-toolchain.toml`, because gpui-pre 0.3.12 uses std APIs newer than 1.96. A first build compiles GPUI and takes several minutes.
+- **Environment:** `T3AGENT37_DATA_DIR` points at another data folder. `T3AGENT37_KEEP_PANEL_OPEN=1` keeps the panel up when you click elsewhere (for recordings). `T3A_DEBUG=1` logs where the panel was placed. `RUST_LOG` sets log levels.
+- **Outside a bundle** (`cargo run`), notifications go through `osascript` (shown as Script Editor's) and Start at login refuses: both need the bundle.
 - **App data:** `~/Library/Application Support/dev.t3agent37.app/`. It holds `agent37-key`, `state.json`, `t3-token` (the app's read-only session on the desktop T3 server) and `machines/` (captures per machine).
 - **On a VM:** everything lives in `/root/.t3agent37/`, including `boot.sh`, the watchdog, `t3.pid` and the machine's name.
 - **Ports on the VM:** T3 `3773`, watchdog `3774`, heartbeat `3775` (public, answers 204), wake link `3776` (public, static page).
@@ -170,12 +158,10 @@ The app runs straight from that bundle path. Nothing is copied to `/Applications
 ### Repo map
 
 ```
-apps/desktop/                 the app (Tauri 2: Rust backend, React + Vite panel)
-  src-gpui/                   the same app on GPUI, replacing tray.rs and src/ (own Cargo project, Rust 1.99)
-  src-tauri/src/
+apps/desktop/                 the app: one Rust package (library = the backend, binary = the menu-bar app)
+  src/
     agent37.rs                Agent37 API client (instances, exec, public ports, usage, billing)
     app.rs                    app model: setup, machines, ports, costs
-    tray.rs                   Tauri commands the panel calls (see docs/ui-contract.md); the `tauri-app` feature
     mcp.rs                    MCP server for agents on this computer
     t3desktop.rs              talks to the desktop T3 Code app and its server
     machine/
@@ -186,24 +172,31 @@ apps/desktop/                 the app (Tauri 2: Rust backend, React + Vite panel
       signin.rs               Claude / Codex / GitHub logins on the machine
       projects.rs, link.rs, capture.rs, work.rs
     proxy/                    t3boat's sleep-aware T3 proxy (only upstream.rs changed)
-  src/                        the panel UI
-    pixel/                    pixel-art engine: palette, rooftop scene, spy sprites
-    components/               views (Rooftop, MachineRow, MachineDetails, ...)
-  scripts/make_icons.py       draws tray.png, tray@2x.png and app-icon.png
-  docs/                       architecture, UI contract, T3 protocol spec
-apps/web/                     t3boat's site, not ported (see Loose ends)
+    bin/t3agent37-dev.rs      the backend headless, for development
+    bin/t3agent37/            the menu-bar app (GPUI)
+      main.rs                 startup, one instance at a time, the menu-bar item, showing and hiding the panel
+      backend.rs              the backend on its own tokio runtime: setup, events, commands
+      model.rs                what the panel does with a machine: actions, labels, numbers
+      theme.rs                brand tokens and fonts
+      macos.rs, macos/shell.m status item, panel placement, notifications, login item (Objective-C, after F2)
+      ui/                     the panel: mod.rs (views, toasts, commands), rooftop, list, details, forms, settings, kit
+      pixel/                  the rooftop's pixel engine: palette, scene, spy sprites
+  assets/fonts/               Inter, Funnel Display, IBM Plex Mono (OFL), embedded
+  icons/                      tray.png, tray@2x.png (menu-bar template), app-icon.png, icon.icns
+  scripts/                    bundle-macos.sh, make_icons.py
+  docs/                       architecture, T3 protocol spec
+apps/web/                     t3boat's site, the baseline for t3agent37's (see Loose ends)
 ```
 
 ### Adding a panel command
 
 A new command touches all of these. The MCP test counts tools, so it fails until it is updated:
 
-1. `src-tauri/src/tray.rs`: the command, and its entry in `generate_handler!`.
-2. `src/types.ts`: its args and result in the commands map.
-3. `src/machine.ts`: an `Action` and its `ACTIONS` label, if it's a button.
-4. `src/App.tsx` (the `act` switch) and `src/mock.ts` (mock handler).
-5. `docs/ui-contract.md`: a row in the commands table.
-6. If agents should have it: `src-tauri/src/mcp.rs`, a `Call` variant, a `tool(...)` entry and the tool count in its test.
+1. The backend: a method on `App` or `MachineRuntime` (`src/app.rs`, `src/machine/`).
+2. `src/bin/t3agent37/backend.rs`: a `Cmd` variant and its arm in `act`, or a `Backend` method if it returns data.
+3. `src/bin/t3agent37/model.rs`: an `Action` constructor with its label and busy text, if it's a button.
+4. The view that shows it (`ui/`), and any toast it needs in `Panel::track` (`ui/mod.rs`).
+5. If agents should have it: `src/mcp.rs`, a `Call` variant, a `tool(...)` entry and the tool count in its test.
 
 ### Agent37 behaviors verified live
 
@@ -264,13 +257,22 @@ The panel's theme is "field agents", in the "Noir amber" palette (light and dark
 - New machines get codenames (raven, falcon, kestrel, …).
 
 **Code and tokens**
-- The engine is in `src/pixel/`: a 12 fps clock, bayer dithering and ramps. `scene.ts` draws the roof, `spy.ts` the agents and `paint.ts` the strip and row icons.
-- Brand tokens are in `src/brand.css`. The accent is `#c2581f` in light mode and `#ffb547` in dark.
+- The engine is in `src/bin/t3agent37/pixel/`: bayer dithering and ramps, redrawn on the panel's 12 fps clock. `scene.rs` draws the roof, `spy.rs` the agents and `paint.rs` the strip and row icons.
+- Brand tokens are in `theme.rs`. The accent is `#c2581f` in light mode and `#ffb547` in dark. Body text is Inter, display Funnel Display SemiBold, small print IBM Plex Mono.
 
 **Icons**
 - To redraw them, run `python3 apps/desktop/scripts/make_icons.py <out-dir>` (standard library only).
-- Copy `tray.png`, `tray@2x.png` and `app-icon.png` into `src-tauri/icons/`.
-- Run `bun run tauri icon src-tauri/icons/app-icon.png` from `apps/desktop` to make every other size. Delete the `android/` and `ios/` folders it adds.
+- Copy `tray.png`, `tray@2x.png` and `app-icon.png` into `apps/desktop/icons/`.
+- Make `icon.icns` from `app-icon.png` (1024 px), in `apps/desktop/icons`:
+
+```sh
+mkdir AppIcon.iconset
+for s in 16 32 128 256 512; do
+  sips -z $s $s app-icon.png --out AppIcon.iconset/icon_${s}x${s}.png
+  sips -z $((s*2)) $((s*2)) app-icon.png --out AppIcon.iconset/icon_${s}x${s}@2x.png
+done
+iconutil -c icns AppIcon.iconset -o icon.icns && rm -r AppIcon.iconset
+```
 
 ## License
 
