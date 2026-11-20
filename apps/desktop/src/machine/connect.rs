@@ -5,6 +5,7 @@
 //! one setting a sleeping machine needs.
 
 use super::MachineRuntime;
+use crate::proxy::upstream;
 use anyhow::{bail, Result};
 use reqwest::Method;
 use serde_json::{json, Value};
@@ -40,8 +41,13 @@ impl MachineRuntime {
             "publishAgentActivity": state["publishAgentActivity"].as_bool().unwrap_or(false),
             "holdWebhooksWhileOffline": true,
         });
-        self.connect_api(Method::POST, "preferences", Some(preferences)).await?;
-        self.update_record(|r| r.connect = true);
+        self.connect_api(Method::POST, "preferences", Some(preferences.clone())).await?;
+        let approval = self.read_device_approval().await;
+        self.update_record(|r| {
+            r.connect = true;
+            r.connect_push = preferences["publishAgentActivity"].as_bool();
+            r.connect_approval = approval;
+        });
         Ok(())
     }
 
@@ -69,12 +75,63 @@ impl MachineRuntime {
         }
         match self.connect_api(Method::GET, "link-state", None).await {
             Ok(state) => {
-                let on = state["linked"] == true && state["managedTunnelActive"] == true;
-                if self.record().connect != on {
-                    self.update_record(|r| r.connect = on);
+                // Linked is on: the tunnel itself is down for a few seconds after every T3
+                // restart (an upgrade on wake), and comes back by itself.
+                let on = state["linked"] == true && state["linkRevoked"] != true;
+                let push = state["publishAgentActivity"].as_bool();
+                let approval = if on { self.read_device_approval().await } else { None };
+                let r = self.record();
+                if r.connect != on || r.connect_push != push || (approval.is_some() && r.connect_approval != approval) {
+                    self.update_record(|r| {
+                        r.connect = on;
+                        r.connect_push = push;
+                        r.connect_approval = approval.or(r.connect_approval);
+                    });
                 }
             }
             Err(e) => tracing::warn!("reading T3 Connect state of {}: {e:#}", self.id()),
+        }
+    }
+
+    /// T3's own "Require approval for new T3 Connect devices" (Settings → Sharing & access): a
+    /// device that signs in to the user's T3 account then waits until one already connected
+    /// here approves it in T3 Code.
+    pub async fn set_connect_approval(&self, on: bool) -> Result<()> {
+        self.ensure_awake().await?;
+        let settings = upstream::call(
+            &self.upstream_url(),
+            &self.upstream_token(),
+            "server.updateSettings",
+            json!({ "patch": { "requireConnectDeviceApproval": on } }),
+        )
+        .await?;
+        let now = settings["requireConnectDeviceApproval"].as_bool().unwrap_or(on);
+        self.update_record(|r| r.connect_approval = Some(now));
+        Ok(())
+    }
+
+    /// T3 Connect's "publish agent activity": push notifications and Live Activities in the T3
+    /// Code phone app, for this machine's agents. Works with the laptop closed: the machine
+    /// sends them.
+    pub async fn set_connect_push(&self, on: bool) -> Result<()> {
+        self.ensure_awake().await?;
+        let state = self.connect_api(Method::GET, "link-state", None).await?;
+        let preferences = json!({
+            "publishAgentActivity": on,
+            "holdWebhooksWhileOffline": state["holdWebhooksWhileOffline"].as_bool().unwrap_or(true),
+        });
+        self.connect_api(Method::POST, "preferences", Some(preferences)).await?;
+        self.update_record(|r| r.connect_push = Some(on));
+        Ok(())
+    }
+
+    async fn read_device_approval(&self) -> Option<bool> {
+        match upstream::call(&self.upstream_url(), &self.upstream_token(), "server.getSettings", json!({})).await {
+            Ok(settings) => settings["requireConnectDeviceApproval"].as_bool(),
+            Err(e) => {
+                tracing::warn!("reading T3 settings of {}: {e:#}", self.id());
+                None
+            }
         }
     }
 

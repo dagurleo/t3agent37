@@ -115,5 +115,10 @@ pub fn apply_to_kit(tk: &Tokens, cx: &mut gpui_kit::App) {
         kit.selection = selection;
         kit.background = tk.bg.into();
         kit.font_family = BODY.into();
+        // Scrollbars: a square, quiet thumb on no track, in the panel's muted ink.
+        let muted: gpui_kit::Hsla = tk.muted.into();
+        kit.scrollbar = gpui_kit::Hsla { a: 0., ..muted };
+        kit.scrollbar_thumb = gpui_kit::Hsla { a: 0.45, ..muted };
+        kit.scrollbar_thumb_hover = gpui_kit::Hsla { a: 0.7, ..muted };
     });
 }

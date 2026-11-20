@@ -143,6 +143,9 @@ impl MachineRuntime {
             .await?;
         let dir = dir.lines().last().unwrap_or_default().trim().to_owned();
         let result = self.kept_awake(self.finish_github(&dir)).await;
+        if self.github_code.lock().unwrap().take().is_some() {
+            self.shared.changed();
+        }
         let _ = a37.exec(&id, &format!("rm -rf '{dir}'; pkill -f 'gh auth login' || true"), 30).await;
         result?;
         self.refresh_github().await;
@@ -160,10 +163,13 @@ impl MachineRuntime {
             let (exit, log) = out.stdout.split_once("---").unwrap_or_default();
             if !shown && let Some(code) = device_code(log) {
                 shown = true;
+                // In the panel for as long as the sign-in waits, and on the clipboard to start.
+                *self.github_code.lock().unwrap() = Some(code.clone());
+                self.shared.changed();
                 copy_to_clipboard(&code);
                 self.shared.notify(
                     format!("GitHub code for {}", self.record().name),
-                    format!("Enter {code} on the GitHub page that just opened (it is on your clipboard)"),
+                    format!("Enter {code} on the GitHub page that just opened. It's on your clipboard and in t3agent37's panel."),
                 );
                 crate::app::open_url("https://github.com/login/device")?;
             }

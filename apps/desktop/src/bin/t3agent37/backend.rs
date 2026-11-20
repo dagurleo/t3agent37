@@ -10,10 +10,12 @@ use futures::channel::mpsc::UnboundedSender;
 use t3agent37_lib::agent37::{Agent37, KEYS_PAGE};
 use t3agent37_lib::app::{self, App, Costs, GITHUB, MachineView, Setup};
 use t3agent37_lib::machine::Event;
+pub use t3agent37_lib::machine::preview::LocalServer;
 use t3agent37_lib::machine::provision::{SIZES, SizeInfo};
 use t3agent37_lib::machine::signin::Agent;
 use t3agent37_lib::mcp::{self, Client};
 use t3agent37_lib::projects::Project;
+pub use t3agent37_lib::store::Preview;
 use t3agent37_lib::store::Settings;
 
 const COSTS_EVERY: Duration = Duration::from_secs(300);
@@ -76,6 +78,12 @@ pub struct Details {
     pub t3_version: String,
     pub created_at: i64,
     pub connect: bool,
+    pub connect_approval: Option<bool>,
+    pub connect_push: Option<bool>,
+    /// Servers listening on it, as T3 there last saw them.
+    pub servers: Vec<LocalServer>,
+    /// Its ports forwarded here.
+    pub previews: Vec<Preview>,
 }
 
 /// A command for one machine.
@@ -96,6 +104,14 @@ pub enum Cmd {
     SignIn(String),
     /// `discard`: delete even while work runs on it.
     Delete { discard: bool },
+    /// T3 Connect: new devices wait for approval.
+    ConnectApproval(bool),
+    /// T3 Connect: agent activity to the phone app.
+    ConnectPush(bool),
+    /// Forwards a port of the machine here and opens it in the browser; resolves to its URL.
+    OpenPort(u16),
+    /// Stops forwarding a port.
+    ClosePort(u16),
 }
 
 pub type Res<T = ()> = Result<T, String>;
@@ -208,9 +224,14 @@ impl Backend {
         self.run(move |inner| async move { Ok(inner.app()?.machine(&id).map_err(err)?.latest_thread().await) })
     }
 
-    /// For the details view; never wakes the machine.
+    /// For the details view; never wakes the machine. Looks again at the servers listening on
+    /// it when it runs.
     pub fn details(&self, id: &str) -> Res<Details> {
-        let d = self.inner.app()?.details(id).map_err(err)?;
+        let app = self.inner.app()?;
+        let d = app.details(id).map_err(err)?;
+        if let Ok(machine) = app.machine(id) {
+            self.rt.spawn(async move { machine.refresh_servers().await });
+        }
         Ok(Details {
             id: d.id,
             cost_today: d.cost_today,
@@ -220,6 +241,10 @@ impl Backend {
             t3_version: d.t3_version,
             created_at: d.created_at,
             connect: d.connect,
+            connect_approval: d.connect_approval,
+            connect_push: d.connect_push,
+            servers: d.servers,
+            previews: d.previews,
         })
     }
 
@@ -302,6 +327,13 @@ async fn act(inner: Arc<Inner>, id: String, cmd: Cmd) -> Res<Option<String>> {
             machine.sign_in(agent).await
         }
         Cmd::Delete { discard } => app.delete_machine(&machine, discard).await,
+        Cmd::ConnectApproval(on) => machine.set_connect_approval(on).await,
+        Cmd::ConnectPush(on) => machine.set_connect_push(on).await,
+        Cmd::OpenPort(port) => return app.open_port(&machine, port, true).await.map(Some).map_err(err),
+        Cmd::ClosePort(port) => {
+            machine.unforward(port);
+            Ok(())
+        }
     };
     done.map(|_| None).map_err(err)
 }
@@ -359,13 +391,23 @@ async fn events(inner: Arc<Inner>, app: Arc<App>, mut rx: tokio::sync::mpsc::Unb
         match ev {
             Event::Persist => app.save(),
             Event::Changed => inner.changed(),
-            Event::Notify { title, body } => inner.notify(title, body),
+            Event::Notify { title, body } => {
+                tracing::info!("notification: {title}: {body}");
+                inner.notify(title, body)
+            }
         }
     }
 }
 
 /// Costs and the account change slowly; refreshed on a timer.
 async fn background(inner: Arc<Inner>, app: Arc<App>) {
+    let alerts = app.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            alerts.check_awake_alerts();
+        }
+    });
     loop {
         app.refresh_costs().await;
         refresh_account(&inner, &app.shared.a37).await;

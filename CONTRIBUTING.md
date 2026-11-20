@@ -76,6 +76,8 @@ apps/desktop/                 the app: one Rust package (library = the backend, 
       mod.rs                  per-machine state loop: wake, sleep, resize, upgrades, scheduled work
       provision.rs/.sh        what runs on the VM and how it starts on every boot
       watchdog.mjs            on the VM: idle detection, drain, heartbeat, wake-link page
+      preview.rs              a machine's ports at localhost here, through T3's preview tunnel
+      setup-project.sh        on the VM: a newly added project's setup (its T3 scripts, or its lockfile)
       connect.rs              T3 Connect turn-on, restart, wake link
       signin.rs               Claude / Codex / GitHub logins on the machine
       projects.rs, link.rs, capture.rs, work.rs
@@ -153,6 +155,7 @@ These were checked on `agent37-ubuntu` VMs in November 2026. Several contradict 
 - Only `/root` persists.
 - The image's static busybox at `/.agent37/bin/busybox` has `nsenter`. A restart-policy Docker container uses it to run `boot.sh` on every boot (see `provision.sh`).
 - No npm, claude, codex or gh are preinstalled. Root has no `~/.profile`, so `~/.local/bin` isn't on exec's `PATH`.
+- Node 22 is at `/usr/bin/node` with corepack, but without npm. `setup-project.sh` installs the npm that ships with that Node release (from nodejs.org's release index; the newest npm refuses Node 22.22.1) into `~/.local`. corepack's shims and global installs go there too, since `/usr` doesn't outlast a cold boot.
 
 **Public ports**
 - `POST /v1/instances/{id}/public-ports` gives a URL with a random 20-character slug and no auth at the edge.
@@ -168,6 +171,12 @@ These were checked on `agent37-ubuntu` VMs in November 2026. Several contradict 
 - **Connect preferences need a linked machine.** `POST /api/connect/preferences` answers 400 "Link this environment to T3 Connect first." until the restart above has happened.
 - **The T3 Connect relay can't wake a sleeping machine.** The tunnel is dialed out from the VM. That's why the wake link exists.
 - **The phone app lists only environments added on the phone.** Add them under **Settings → Environments → T3 Connect**. A free T3 account allowed 3 machines there.
+- **The preview tunnel:** `GET /api/preview/tunnel?port=N` upgrades to a WebSocket that carries raw TCP bytes to that port on the machine's loopback (T3 dials `127.0.0.1`, then `::1`). It takes the proxy's own bearer token through Agent37's edge. Nothing listening is a `502` with `x-t3-tunnel-port-refused`, and the tunnel turned off in T3's settings (`enablePreviewTunnel`) is a `403` with `x-t3-tunnel-disabled`. Both headers survive the edge. A new connection costs about 0.5 s, and a 20 MB transfer took 2.6 s.
+- **`subscribeDiscoveredLocalServers`** (payload `{}`) answers `{servers: [{port, processName, pid, terminal, agent}], scannedAt}` at once. It lists only servers T3's own terminals and agents started: a server started over Agent37's exec isn't in it.
+- **Server settings:** `server.getSettings` and `server.updateSettings {patch}` take the proxy's token. A patch merges record fields by key (`{projectScriptOverrides: {}}` changes nothing), and `null` removes a key. `requireConnectDeviceApproval` is the "Require approval for new T3 Connect devices" switch. T3 Connect's `preferences` hold only `publishAgentActivity` (phone push and Live Activities) and `holdWebhooksWhileOffline`.
+- **Project scripts live in two places:** the project's own (the shell's `scripts`) and the server's settings, where T3 Code's script editor saves them (`projectSettingsOverrides[projectId].defaultProjectScripts`; the older `projectScriptOverrides[projectId]` key is still accepted and translated, and `getSettings` derives it back). `orchestration.dispatchCommand` takes no `project.*` command from a client, so `copy_scripts` writes the settings, and reads them here first (`T3Desktop::project_scripts`; t3agent37's read-only session may).
+- **Which address a machine's T3 issues link tokens for:** its OAuth `resource` is the origin of the request as it arrives, so through Agent37's edge it was the public hostname until T3 0.1.12 and is now the VM's internal address (`https://10.x.x.x:3773/mcp`; `x-forwarded-host` doesn't change it). A link asking for any other address fails with `PeerLinkError: This server only issues tokens for …`. T3 checks `resource` only at the approval and the token request, a missing one passes both, and the session it issues isn't bound to an address (`/mcp` checks only the session). So `proxy/link.rs` drops `resource` from both steps, which also survives the VM's address changing.
+- **`t3 thread start <project> <message>`** works on a machine over exec (`--provider claudeAgent --model ...` when the project has no default model; `--wait` prints the reply). Handy for tests.
 - **Claude Code refuses `--dangerously-skip-permissions` (T3's full-access mode) as root** unless `IS_SANDBOX=1` is set. Everything on the VM runs as root, so `boot.sh` exports `IS_SANDBOX=1` for the T3 server.
 
 ## Design

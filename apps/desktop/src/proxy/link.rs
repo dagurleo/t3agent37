@@ -26,11 +26,14 @@ fn step(parts: &Parts) -> Relay {
     Relay { target: target(&parts.uri), authorization: None, wake: false }
 }
 
-/// What the machine's server calls itself. The linker asks for a token for the address it
-/// knows, the proxy's, and the server only issues tokens for its own.
-fn resource(m: &MachineRuntime) -> String {
-    format!("{}/mcp", m.upstream_url())
-}
+/// The linker asks for a token for the address it knows, the proxy's, and the server issues
+/// tokens only for its own. Which address that is depends on how a request reaches it: through
+/// Agent37's edge it was the machine's public hostname until T3 0.1.12, and since then it is
+/// the VM's internal one (`https://10.x.x.x:3773`), which can change when the VM moves to
+/// another host. So the proxy names none: OAuth's `resource` is optional, and a server given
+/// none issues the token for itself, at both the approval and the token request. The token
+/// isn't bound to an address afterwards; `/mcp` checks only the session.
+const RESOURCE: &str = "resource";
 
 pub async fn register(State(m): M, req: Request) -> Response {
     let (parts, body) = req.into_parts();
@@ -43,25 +46,23 @@ pub async fn decision(State(m): M, req: Request) -> Response {
     let Ok(body) = axum::body::to_bytes(body, MAX_STEP_BODY).await else {
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
     };
-    let body = decision_for(&body, &resource(&m)).unwrap_or_else(|| body.to_vec());
+    let body = decision_for(&body).unwrap_or_else(|| body.to_vec());
     let route = step(&parts);
     relay(&m, parts, Body::from(body), route).await
 }
 
-/// The decision with `resource` as what it asks a token for. `None`: not a decision the server
+/// The decision without the address it asks a token for. `None`: not a decision the server
 /// would take anyway.
-fn decision_for(body: &[u8], resource: &str) -> Option<Vec<u8>> {
+fn decision_for(body: &[u8]) -> Option<Vec<u8>> {
     let mut decision: Value = serde_json::from_slice(body).ok()?;
-    *decision.get_mut("authorization")?.get_mut("resource")? = resource.into();
+    decision.get_mut("authorization")?.as_object_mut()?.remove(RESOURCE);
     serde_json::to_vec(&decision).ok()
 }
 
-/// The token request with `resource` as what it asks a token for.
-fn token_request_for(body: &[u8], resource: &str) -> String {
+/// The token request without the address it asks a token for.
+fn token_request_for(body: &[u8]) -> String {
     url::form_urlencoded::Serializer::new(String::new())
-        .extend_pairs(
-            url::form_urlencoded::parse(body).map(|(k, v)| if k == "resource" { (k, resource.into()) } else { (k, v) }),
-        )
+        .extend_pairs(url::form_urlencoded::parse(body).filter(|(k, _)| k != RESOURCE))
         .finish()
 }
 
@@ -75,7 +76,7 @@ pub async fn token(State(m): M, req: Request) -> Response {
     let Ok(body) = axum::body::to_bytes(body, MAX_STEP_BODY).await else {
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
     };
-    let form = token_request_for(&body, &resource(&m));
+    let form = token_request_for(&body);
     // The answer is read here, so it must come uncompressed.
     parts.headers.remove(header::ACCEPT_ENCODING);
     let route = step(&parts);
@@ -157,24 +158,20 @@ fn handshake(m: &Arc<MachineRuntime>, body: &[u8]) -> Option<Response> {
 mod tests {
     use super::*;
 
-    const MACHINE: &str = "https://box.example/mcp";
-
     #[test]
-    fn linking_asks_for_a_token_for_the_machine() {
+    fn linking_lets_the_machine_name_itself() {
         let decision = json!({
             "authorization": {"client_id": "c", "resource": "http://localhost:47731/mcp", "state": "s"},
             "decision": {"_tag": "pairing-code", "access": "full-access", "code": "K"},
         });
-        let sent: Value = serde_json::from_slice(&decision_for(decision.to_string().as_bytes(), MACHINE).unwrap()).unwrap();
-        assert_eq!(sent["authorization"]["resource"], MACHINE);
+        let sent: Value = serde_json::from_slice(&decision_for(decision.to_string().as_bytes()).unwrap()).unwrap();
+        assert!(sent["authorization"].get("resource").is_none());
         assert_eq!(sent["authorization"]["state"], "s");
+        assert_eq!(sent["authorization"]["client_id"], "c");
         assert_eq!(sent["decision"], decision["decision"]);
-        assert!(decision_for(b"{}", MACHINE).is_none());
+        assert!(decision_for(b"{}").is_none());
 
-        let form = "grant_type=authorization_code&code=a%2Bb&resource=http%3A%2F%2Flocalhost%3A47731%2Fmcp";
-        assert_eq!(
-            token_request_for(form.as_bytes(), MACHINE),
-            "grant_type=authorization_code&code=a%2Bb&resource=https%3A%2F%2Fbox.example%2Fmcp"
-        );
+        let form = "grant_type=authorization_code&code=a%2Bb&resource=http%3A%2F%2Flocalhost%3A47731%2Fmcp&code_verifier=v";
+        assert_eq!(token_request_for(form.as_bytes()), "grant_type=authorization_code&code=a%2Bb&code_verifier=v");
     }
 }

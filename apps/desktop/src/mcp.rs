@@ -87,6 +87,12 @@ enum Call {
         #[serde(default)]
         discard: bool,
     },
+    OpenPort {
+        machine: String,
+        port: u16,
+        #[serde(default)]
+        open: bool,
+    },
 }
 
 fn router<T: Tools>(tools: Arc<T>) -> Router {
@@ -288,9 +294,25 @@ fn tool_list() -> Value {
             &["machine"],
         ),
         tool(
+            "open_port",
+            "Makes a port on a machine (a dev server an agent started there, a database) reachable on \
+             this computer at http://localhost:<port> (the same number when it's free) and returns \
+             that address, for a browser, curl or tests here. Wakes the machine first. It stays \
+             forwarded until the user stops it in t3agent37; while the machine sleeps, a page opened \
+             in a browser wakes it and other requests are dropped. `open` also opens it in the \
+             user's default browser.",
+            json!({
+                "machine": machine,
+                "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "open": { "type": "boolean", "description": "Also open it in the user's browser" },
+            }),
+            &["machine", "port"],
+        ),
+        tool(
             "machine_details",
             "One machine's cost today and this month, time awake today, which agents are signed in \
-             there, its T3 version and creation time, and whether T3 Connect is on. Never wakes it.",
+             there, its T3 version and creation time, whether T3 Connect is on, the servers T3 saw \
+             listening there (servers) and its ports forwarded to this computer (previews). Never wakes it.",
             json!({ "machine": machine }),
             &["machine"],
         ),
@@ -447,6 +469,12 @@ async fn run(app: &Arc<App>, call: Call) -> Result<String> {
             app.pair(&m)?;
             format!("T3 Code now asks the user to add {}; tell them to confirm.", m.record().name)
         }
+        Call::OpenPort { machine, port, open } => {
+            let m = app.machine(&machine)?;
+            m.ensure_awake().await?;
+            let url = app.open_port(&m, port, open).await?;
+            format!("Port {port} on {} is at {url} on this computer.", m.record().name)
+        }
         Call::DeleteMachine { machine, discard } => {
             let m = app.machine(&machine)?;
             let record = m.record();
@@ -581,7 +609,7 @@ mod tests {
     async fn lists_tools_and_rejects_unknown_methods() {
         let tools = rpc("tools/list", json!({})).await["result"]["tools"].clone();
         let names: Vec<&str> = tools.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names.len(), 16);
+        assert_eq!(names.len(), 17);
         assert!(names.contains(&"sign_in_agent") && names.contains(&"delete_machine") && names.contains(&"wake_link"));
         assert_eq!(rpc("ping", json!({})).await["result"], json!({}));
         assert_eq!(rpc("resources/list", json!({})).await["error"]["code"], -32601);

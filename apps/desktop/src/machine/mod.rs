@@ -4,6 +4,7 @@
 mod capture;
 mod connect;
 mod link;
+pub mod preview;
 pub mod projects;
 pub mod provision;
 pub mod signin;
@@ -105,6 +106,9 @@ pub struct WatchdogStatus {
     /// Agent runs in flight.
     pub working_threads: u32,
     pub working_subagents: u32,
+    /// The top-level threads working, at most 10. Older watchdogs don't say.
+    #[serde(default)]
+    pub working: Vec<WorkingThread>,
     /// Busy only because of CPU use (a build or job outside an agent turn).
     pub cpu_busy: bool,
     /// T3 is not answering, so the watchdog keeps it up (at most 30 min) in case an agent works.
@@ -126,6 +130,15 @@ pub struct WatchdogStatus {
     #[serde(skip, default = "SystemTime::now")]
     pub received: SystemTime,
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct WorkingThread {
+    pub id: String,
+    pub title: String,
+}
+
+/// Agents this long without work have finished, not paused between two turns.
+const FINISHED_AFTER: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Debug)]
 pub enum Event {
@@ -189,6 +202,16 @@ pub struct MachineRuntime {
     /// Its T3 projects as last read, and those t3boat is adding.
     projects: Mutex<Vec<projects::MachineProject>>,
     adding: Mutex<Vec<projects::MachineProject>>,
+    /// GitHub's one-time code while its sign-in waits for it, for the panel to show.
+    github_code: Mutex<Option<String>>,
+    /// Since when it has been up without a break (wall clock), and whether that stretch was
+    /// already warned about.
+    awake_since: Mutex<Option<SystemTime>>,
+    pub(crate) awake_warned: Mutex<bool>,
+    /// Its ports forwarded to this computer, by port on the machine.
+    forwards: Mutex<HashMap<u16, preview::Forward>>,
+    /// The servers T3 found listening on it, as last read, and when.
+    servers: Mutex<(Vec<preview::LocalServer>, Option<Instant>)>,
 }
 
 impl MachineRuntime {
@@ -215,6 +238,11 @@ impl MachineRuntime {
             wake_failure: Mutex::new(None),
             projects: Mutex::new(Vec::new()),
             adding: Mutex::new(Vec::new()),
+            github_code: Mutex::new(None),
+            awake_since: Mutex::new(None),
+            awake_warned: Mutex::new(false),
+            forwards: Mutex::new(HashMap::new()),
+            servers: Mutex::new((Vec::new(), None)),
         };
         if let Some(shell) = shell {
             this.set_projects_from(&shell);
@@ -259,6 +287,17 @@ impl MachineRuntime {
     pub fn retire(&self) {
         let _cache = self.cache.lock().unwrap();
         self.set_power(Power::Missing);
+        self.stop_forwards();
+    }
+
+    /// Since when it has been up without a break; none while it sleeps.
+    pub fn awake_since(&self) -> Option<SystemTime> {
+        *self.awake_since.lock().unwrap()
+    }
+
+    /// GitHub's one-time code while its sign-in waits for the user to enter it.
+    pub fn github_code(&self) -> Option<String> {
+        self.github_code.lock().unwrap().clone()
     }
 
     /// Missing is final: an Agent37 answer or a wake still in flight from before must not revive a
@@ -274,6 +313,18 @@ impl MachineRuntime {
         if changed {
             if p != Power::Running {
                 *self.watchdog.lock().unwrap() = None;
+            }
+            // A resize or a wake still in progress keeps the stretch going: the VM bills
+            // through them.
+            match p {
+                Power::Running => {
+                    self.awake_since.lock().unwrap().get_or_insert_with(SystemTime::now);
+                }
+                Power::Stopped | Power::Missing => {
+                    *self.awake_since.lock().unwrap() = None;
+                    *self.awake_warned.lock().unwrap() = false;
+                }
+                _ => {}
             }
             self.shared.changed();
         }
@@ -641,6 +692,12 @@ impl MachineRuntime {
     /// Someone used the machine: it stays awake, and recorded answers may be outdated.
     pub fn user_action(self: &Arc<Self>) {
         self.cache.lock().unwrap().bump_epoch();
+        self.keep_up();
+    }
+
+    /// Someone uses the machine outside T3 (a forwarded port): it stays awake, at most one call
+    /// to its watchdog per `HEARTBEAT_EVERY`.
+    pub fn keep_up(self: &Arc<Self>) {
         if self.power() != Power::Running {
             return;
         }
@@ -944,6 +1001,9 @@ impl MachineRuntime {
         let mut watchdog_failures = 0u32;
         let mut was_busy = false;
         let mut was_running = false;
+        // The threads last seen working, and since when none are.
+        let mut last_working: Vec<WorkingThread> = Vec::new();
+        let mut idle_since: Option<Instant> = None;
         loop {
             let transitioning = matches!(self.power(), Power::Stopping | Power::Starting | Power::Unknown);
             let now = SystemTime::now();
@@ -1004,6 +1064,7 @@ impl MachineRuntime {
                             tokio::spawn(async move { this.refresh_projects().await });
                         }
                         was_busy = s.busy;
+                        self.follow_agents(&s, &mut last_working, &mut idle_since);
                         if !s.agents_unknown && self.wake_failure.lock().unwrap().take().is_some() {
                             // A failed wake came up after all: T3 answers.
                             self.shared.changed();
@@ -1017,6 +1078,52 @@ impl MachineRuntime {
             }
             tokio::time::sleep(WATCHDOG_POLL).await;
         }
+    }
+
+    /// Says when agents that worked have all finished: once none has worked for
+    /// `FINISHED_AFTER`, so a pause between two turns doesn't count.
+    fn follow_agents(&self, s: &WatchdogStatus, last_working: &mut Vec<WorkingThread>, idle_since: &mut Option<Instant>) {
+        if s.agents_unknown {
+            return;
+        }
+        if s.working_threads + s.working_subagents > 0 {
+            // The latest names, but a thread that finished while another runs stays in the list.
+            for t in &s.working {
+                if !last_working.iter().any(|w| w.id == t.id) {
+                    last_working.push(t.clone());
+                }
+            }
+            if last_working.is_empty() {
+                last_working.push(WorkingThread { id: String::new(), title: String::new() });
+            }
+            *idle_since = None;
+            return;
+        }
+        if last_working.is_empty() {
+            return;
+        }
+        let since = *idle_since.get_or_insert_with(Instant::now);
+        if since.elapsed() < FINISHED_AFTER {
+            return;
+        }
+        let finished = std::mem::take(last_working);
+        *idle_since = None;
+        if !self.shared.settings.read().unwrap().notify_finished {
+            return;
+        }
+        let name = self.record().name;
+        let titles: Vec<String> = finished.iter().filter(|t| !t.title.is_empty()).map(|t| format!("“{}”", t.title)).collect();
+        let what = match titles.len() {
+            0 => "Its agents are done.".to_owned(),
+            1 => format!("{} is done.", titles[0]),
+            n => format!("{n} threads are done: {}.", titles.join(", ")),
+        };
+        let then = if s.keep_awake_forever || s.keep_awake_secs > 0 {
+            " It stays awake as you asked."
+        } else {
+            " It sleeps in 5 minutes unless you use it."
+        };
+        self.shared.notify(format!("{name} finished"), format!("{what}{then}"));
     }
 
     /// When work T3 starts on its own (an automation, ...) comes due on a sleeping machine, which

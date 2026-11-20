@@ -3,15 +3,20 @@
 //! shows its progress in T3 Code, then the env files written in with `projects.writeFile`.
 
 use super::MachineRuntime;
+use crate::agent37::shell_quote;
 use crate::projects::{self, Project};
 use crate::proxy::upstream;
 use anyhow::{bail, Result};
+use base64::Engine;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Long enough for a large repository on a slow link.
 const CLONE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// A setup still going after this goes on unwatched.
+const SETUP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const SETUP_SH: &str = include_str!("setup-project.sh");
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -154,7 +159,103 @@ impl MachineRuntime {
                 failed.push(format!("{path}: {e:#}"));
             }
         }
+        if let Err(e) = self.copy_scripts(project, &project_id).await {
+            tracing::warn!("copying {}'s scripts to {}: {e:#}", project.title, self.id());
+        }
+        if self.shared.settings.read().unwrap().set_up_projects {
+            self.set_up(project, &cwd).await;
+        }
         Ok(failed)
+    }
+
+    /// The project's T3 scripts (Run, Test, its setup...) onto the machine's copy, which T3's
+    /// clone leaves without them; T3 there then runs its setup ones for each new worktree too.
+    /// Clients can't change a project's own scripts, so they go where T3 Code's script editor
+    /// puts them: the server's per-project overrides. A patch merges by project, so others stay.
+    async fn copy_scripts(&self, project: &Project, project_id: &str) -> Result<()> {
+        if project.scripts.is_empty() || project_id.is_empty() {
+            return Ok(());
+        }
+        let (url, token) = (self.upstream_url(), self.upstream_token());
+        let shell = self.shell_snapshot().await?;
+        let own = projects::live(&shell).find(|p| p["id"] == project_id).map(|p| p["scripts"].clone());
+        let settings = upstream::call(&url, &token, "server.getSettings", json!({})).await?;
+        let overridden = settings["projectScriptOverrides"][project_id].is_array();
+        if overridden || own.as_ref().and_then(Value::as_array).is_some_and(|s| !s.is_empty()) {
+            return Ok(());
+        }
+        let patch = json!({ "patch": { "projectScriptOverrides": { project_id: project.scripts } } });
+        upstream::call(&url, &token, "server.updateSettings", patch).await?;
+        Ok(())
+    }
+
+    /// Runs the project's setup on the machine, in its folder (`setup-project.sh`): its T3
+    /// setup scripts, or its dependencies from its lockfiles. Progress shows on its row; a
+    /// failure is a notification, never a failed add: the project is there either way.
+    async fn set_up(&self, project: &Project, cwd: &str) {
+        let scripts: Vec<String> = project
+            .scripts
+            .iter()
+            .filter(|s| s["runOnWorktreeCreate"] == true)
+            .filter_map(|s| {
+                let command = s["command"].as_str()?.replace(['\n', '\t'], " ");
+                let name = s["name"].as_str().unwrap_or("setup").replace(['\n', '\t'], " ");
+                Some(format!("{name}\t{command}"))
+            })
+            .collect();
+        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+        let script = format!(
+            "d=$HOME/.t3agent37/setup; mkdir -p \"$d\"; f=\"$d/$(date +%s)-$RANDOM\"; \
+             echo {} | base64 -d > \"$f.sh\"; echo {} | base64 -d > \"$f.scripts\"; \
+             cd {} || exit 1; \
+             (bash \"$f.sh\" \"$f.scripts\" > \"$f.log\" 2>&1; echo $? > \"$f.exit\") </dev/null >/dev/null 2>&1 & echo \"$f\"",
+            shell_quote(&b64(SETUP_SH)),
+            shell_quote(&b64(&scripts.join("\n"))),
+            shell_quote(cwd),
+        );
+        let (id, a37) = (self.sandbox_id(), &self.shared.a37);
+        let started = match a37.exec_ok(&id, &script, 30).await {
+            Ok(out) => out.lines().last().unwrap_or_default().trim().to_owned(),
+            Err(e) => return tracing::warn!("setting up {} on {}: {e:#}", project.title, self.id()),
+        };
+        self.set_adding_status(&project.repo_key, "Setting up");
+        let outcome = self.kept_awake(self.wait_set_up(&project.repo_key, &started)).await;
+        let name = self.record().name;
+        match outcome {
+            Ok(None) => {}
+            Ok(Some(tail)) => self.shared.notify(format!("Setting up {} on {name} failed", project.title), tail),
+            Err(e) => self.shared.notify(format!("Setting up {} on {name}", project.title), format!("{e:#}")),
+        }
+    }
+
+    /// Follows a setup until it ends: None when it went fine, else its last lines.
+    async fn wait_set_up(&self, repo_key: &str, run: &str) -> Result<Option<String>> {
+        let started = Instant::now();
+        let (id, a37) = (self.sandbox_id(), &self.shared.a37);
+        loop {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let out = a37
+                .exec(&id, &format!("cat '{run}.exit' 2>/dev/null; echo ---; grep '^t3agent37-step: ' '{run}.log' | tail -n 1; echo ---; tail -n 12 '{run}.log'"), 30)
+                .await?;
+            let mut parts = out.stdout.splitn(3, "---\n");
+            let (exit, step, tail) = (parts.next().unwrap_or_default().trim(), parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
+            if let Some(step) = step.trim().strip_prefix("t3agent37-step: ") {
+                self.set_adding_status(repo_key, &format!("Setting up · {step}"));
+            }
+            match exit {
+                "" => {}
+                "0" | "3" => return Ok(None),
+                _ => {
+                    let tail: String = tail.lines().filter(|l| !l.starts_with("t3agent37-step: ")).collect::<Vec<_>>().join("\n");
+                    let tail = tail.trim();
+                    let cut = tail.char_indices().rev().nth(399).map_or(0, |(i, _)| i);
+                    return Ok(Some(tail[cut..].to_owned()));
+                }
+            }
+            if started.elapsed() > SETUP_TIMEOUT {
+                bail!("still running after {} minutes; it goes on in the background (log: {run}.log)", SETUP_TIMEOUT.as_secs() / 60);
+            }
+        }
     }
 
     fn set_adding_status(&self, repo_key: &str, status: &str) {

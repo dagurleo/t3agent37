@@ -88,7 +88,10 @@ impl T3Desktop {
             .await
             .context("running t3 environment")?;
         if !out.status.success() {
-            bail!("t3 environment {}: {}", args[0], String::from_utf8_lossy(&out.stderr).trim());
+            // Some failures are reported on stdout.
+            let said = [&out.stderr, &out.stdout].map(|b| String::from_utf8_lossy(b).trim().to_owned());
+            let said = said.iter().find(|s| !s.is_empty()).cloned().unwrap_or_else(|| format!("exit {}", out.status));
+            bail!("t3 environment {}: {said}", args[0]);
         }
         Ok(out.stdout)
     }
@@ -175,6 +178,22 @@ impl T3Desktop {
             }
         }
         Ok((files, failed))
+    }
+
+    /// The scripts T3 Code shows for `project` here: those its script editor saved in the
+    /// server's settings (per project), else the project's own.
+    pub async fn project_scripts(&self, project: &Project) -> Vec<Value> {
+        let settings = match self.call("server.getSettings", json!({})).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("reading T3 Code's settings: {e:#}");
+                return project.scripts.clone();
+            }
+        };
+        let saved = settings["projectSettingsOverrides"][&project.id]["defaultProjectScripts"]
+            .as_array()
+            .or(settings["projectScriptOverrides"][&project.id].as_array());
+        saved.cloned().unwrap_or_else(|| project.scripts.clone())
     }
 
     async fn call(&self, tag: &str, payload: Value) -> Result<Value> {

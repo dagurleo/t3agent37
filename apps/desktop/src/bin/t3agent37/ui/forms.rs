@@ -2,6 +2,7 @@
 //! list T3 Code's projects that have a git remote, fetched fresh each time they open.
 
 use gpui_kit::component::input::{Input, InputEvent, InputState, MoveDown, MoveUp};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use t3agent37_lib::app::MachineView;
@@ -167,7 +168,7 @@ impl Panel {
             .collect();
         let projects = self.project_list("new-projects", options, "", &tk, cx);
         let projects_field = field("projects", &tk)
-            .child(div().border_1().border_color(tk.frame).bg(tk.bg).child(div().id("new-projects-scroll").max_h(px(150.)).overflow_y_scroll().child(projects)))
+            .child(div().border_1().border_color(tk.frame).bg(tk.bg).child(div().max_h(px(150.)).child(projects).overflow_y_scrollbar().id("new-projects-scroll")))
             .child(kit::hint("Optional · cloned from git once it's up, .env files included", &tk));
 
         let n = picked.len();
@@ -181,7 +182,6 @@ impl Panel {
             .child(sub_header("New machine", &tk, cx))
             .child(
                 div()
-                    .id("new-body")
                     .flex()
                     .flex_col()
                     .gap(px(18.))
@@ -190,10 +190,11 @@ impl Panel {
                     .px(px(16.))
                     .pt(px(10.))
                     .pb(px(4.))
-                    .overflow_y_scroll()
                     .child(name_field)
                     .child(size_field)
-                    .child(projects_field),
+                    .child(projects_field)
+                    .overflow_y_scrollbar()
+                    .id("new-body"),
             )
             .child(
                 div()
@@ -351,7 +352,7 @@ impl Panel {
                     .child(div().font_family(MONO).font_weight(FontWeight::MEDIUM).text_size(px(12.)).text_color(tk.accent_text).child("$"))
                     .child(div().flex_1().min_w_0().font_family(MONO).text_size(px(12.)).child(Input::new(&query).appearance(false).px_0().py_0().h(px(18.)))),
             )
-            .child(div().id("pick-scroll").h(px(180.)).overflow_y_scroll().child(list))
+            .child(div().h(px(180.)).child(list).overflow_y_scrollbar().id("pick-scroll"))
             .into_any_element()
     }
 

@@ -2,9 +2,11 @@
 //! its agents' sign-ins, T3 Connect and the wake link, its projects, then size and delete
 //! folded away; the main action at the foot.
 
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use t3agent37_lib::app::{MachineState as State, MachineView};
+use t3agent37_lib::app::{GITHUB, MachineState as State, MachineView};
 
 use super::kit::{self, Btn, Icon, Size};
 use super::Panel;
@@ -31,6 +33,9 @@ impl Panel {
         }
         body.push(self.agents(m, d.as_ref(), pending, &tk, cx).into_any_element());
         body.push(self.connect(m, d.as_ref(), pending, &tk, cx).into_any_element());
+        if !gone {
+            body.push(self.previews(m, d.as_ref(), pending, &tk, window, cx).into_any_element());
+        }
         if !(gone && m.projects.is_empty()) {
             body.push(self.projects(m, &tk, window, cx).into_any_element());
         }
@@ -96,19 +101,29 @@ impl Panel {
             .min_h_0()
             .child(sub_header(&m.name, &tk, cx))
             .child(
+                // The picker scrolls this by hand (see `open_picker`), so it has its own handle;
+                // the bar sits on top, outside what scrolls.
                 div()
-                    .id("details-body")
+                    .relative()
                     .flex()
                     .flex_col()
-                    .gap(px(22.))
                     .flex_1()
                     .min_h_0()
-                    .px(px(16.))
-                    .pt(px(4.))
-                    .pb(px(16.))
-                    .overflow_y_scroll()
-                    .track_scroll(&self.details_scroll)
-                    .children(body),
+                    .child(
+                        div()
+                            .id("details-body")
+                            .flex()
+                            .flex_col()
+                            .gap(px(22.))
+                            .size_full()
+                            .px(px(16.))
+                            .pt(px(4.))
+                            .pb(px(16.))
+                            .overflow_y_scroll()
+                            .track_scroll(&self.details_scroll)
+                            .children(body),
+                    )
+                    .vertical_scrollbar(&self.details_scroll),
             )
             .child(foot)
     }
@@ -345,7 +360,7 @@ impl Panel {
             Some(d) => d
                 .agents
                 .iter()
-                .map(|(name, signed_in)| {
+                .flat_map(|(name, signed_in)| {
                     let right: AnyElement = if *signed_in {
                         kit::ok("signed in", &tk).into_any_element()
                     } else if m.signed_out.contains(name) {
@@ -365,14 +380,141 @@ impl Panel {
                     } else {
                         kit::caption(&tk).child("signed out").into_any_element()
                     };
-                    kit::line()
-                        .child(div().flex_1().min_w_0().child(kit::agent_name(name, 13., tk.fg)))
-                        .child(right)
-                        .into_any_element()
+                    let line = kit::line().child(div().flex_1().min_w_0().child(kit::agent_name(name, 13., tk.fg))).child(right).into_any_element();
+                    let code = (name == GITHUB).then(|| m.github_code.clone()).flatten();
+                    std::iter::once(line).chain(code.map(|code| github_code(code, &tk, cx).into_any_element()))
                 })
                 .collect(),
         };
         kit::section("agents", None, None, kit::lines(items, &tk), &tk)
+    }
+
+    /// Its dev servers, and opening them in the browser here at localhost.
+    fn previews(&mut self, m: &MachineView, d: Option<&Details>, pending: Option<&'static str>, tk: &Tokens, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let tk = *tk;
+        let t = self.t();
+        let Some(d) = d else {
+            return kit::section("previews", None, None, kit::lines(skeleton_lines(1, t, &tk), &tk), &tk);
+        };
+        let disabled = pending.is_some() || m.state == State::Missing;
+        // Forwarded ones first, in the order they were added; then the rest T3 sees listening.
+        let process = |port: u16| d.servers.iter().find(|s| s.port == port).and_then(|s| s.process.clone());
+        let mut rows: Vec<(u16, Option<u16>, Option<String>)> = d.previews.iter().map(|p| (p.port, Some(p.local_port), process(p.port))).collect();
+        rows.extend(d.servers.iter().filter(|s| !d.previews.iter().any(|p| p.port == s.port)).map(|s| (s.port, None, s.process.clone())));
+        let mut items: Vec<AnyElement> = Vec::new();
+        for (port, local, process) in rows {
+            let open = model::open_port(port);
+            let running = pending == Some(open.busy) && self.opening_port == Some(port);
+            let m2 = m.clone();
+            let left = div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .flex_1()
+                .min_w_0()
+                .child(div().flex_none().font_family(MONO).text_size(px(12.5)).child(format!(":{port}")))
+                .when_some(process, |l, p| l.child(div().min_w_0().truncate().text_size(px(12.)).text_color(tk.muted).child(p)))
+                .when(local.is_some_and(|l| l != port), |l| {
+                    l.child(div().flex_none().font_family(MONO).text_size(px(10.5)).text_color(tk.accent_text).child(format!("here :{}", local.unwrap_or_default())))
+                });
+            let open_button = kit::button(("open-port", port as usize), Btn::Outline, Size::Sm, disabled && !running, &tk)
+                .map(|b| if running { b.child(kit::dots(t, tk.accent_text)).child("Opening…") } else { b.child("Open").child(kit::icon(Icon::Open, 9., tk.accent_text)) })
+                .when(!disabled, |b| {
+                    b.on_click(cx.listener(move |this, _, _, cx| {
+                        this.opening_port = Some(port);
+                        this.track(&m2, model::open_port(port), cx);
+                    }))
+                });
+            let m3 = m.clone();
+            let close = local.map(|_| {
+                kit::button(("close-port", port as usize), Btn::Icon, Size::Sm, disabled, &tk)
+                    .child(kit::icon(Icon::Close, 9., tk.muted))
+                    .when(!disabled, |b| b.on_click(cx.listener(move |this, _, _, cx| this.track(&m3, model::close_port(port), cx))))
+            });
+            items.push(kit::line().gap(px(6.)).child(left).child(open_button).children(close).into_any_element());
+        }
+        let awake = matches!(m.state, State::Working | State::Idle);
+        let listed = !items.is_empty();
+        if !listed {
+            let text = if awake {
+                "No servers from its agents or terminals yet. When one starts, it shows here.".to_string()
+            } else {
+                format!("Servers {} runs show here while it's awake.", m.name)
+            };
+            items.push(line_note(&tk).child(text).into_any_element());
+        }
+        // Any port by number: T3 lists only what its agents and terminals started.
+        items.push(self.port_field(m, disabled, &tk, window, cx).into_any_element());
+        if listed {
+            items.push(
+                line_note(&tk)
+                    .child(format!(
+                        "Opens in your browser at localhost, through T3. Opening a page wakes {}; one left open doesn't keep it awake.",
+                        m.name
+                    ))
+                    .into_any_element(),
+            );
+        }
+        kit::section("previews", None, None, kit::lines(items, &tk), &tk)
+    }
+
+    /// "+ Open another port…", and the field it opens: a port number, Enter opens it.
+    fn port_field(&mut self, m: &MachineView, disabled: bool, tk: &Tokens, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let tk = *tk;
+        let Some((input, _)) = &self.port_input else {
+            let m = m.clone();
+            return div()
+                .id("open-another-port")
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .w_full()
+                .min_h(px(34.))
+                .text_color(tk.accent_text)
+                .text_size(px(12.5))
+                .when(!disabled, |r| r.cursor_pointer())
+                .child(kit::icon(Icon::Plus, 10., tk.accent_text))
+                .child("Open another port…")
+                .when(!disabled, |r| r.on_click(cx.listener(move |this, _, window, cx| this.open_port_field(&m, window, cx))))
+                .into_any_element();
+        };
+        let focused = input.focus_handle(cx).is_focused(window);
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .h(px(34.))
+            .px(px(10.))
+            .my(px(4.))
+            .border_1()
+            .border_color(if focused { tk.accent_text } else { tk.frame })
+            .child(div().font_family(MONO).text_size(px(12.)).text_color(tk.accent_text).child(":"))
+            .child(div().flex_1().min_w_0().font_family(MONO).text_size(px(12.)).child(Input::new(input).appearance(false).px_0().py_0().h(px(18.))))
+            .child(kit::caption(&tk).child("enter opens it"))
+            .into_any_element()
+    }
+
+    fn open_port_field(&mut self, m: &MachineView, window: &mut Window, cx: &mut Context<Self>) {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("3000"));
+        let m = m.clone();
+        let sub = cx.subscribe_in(&input, window, move |this: &mut Self, input, event: &InputEvent, window, cx| {
+            if !matches!(event, InputEvent::PressEnter { .. }) {
+                return;
+            }
+            match input.read(cx).value().trim().parse::<u16>() {
+                Ok(port) if port > 0 => {
+                    this.port_input = None;
+                    this.focus.focus(window, cx);
+                    this.opening_port = Some(port);
+                    this.track(&m, model::open_port(port), cx);
+                }
+                _ => this.toast("A port is a number from 1 to 65535", true, cx),
+            }
+            cx.notify();
+        });
+        input.update(cx, |s, cx| s.focus(window, cx));
+        self.port_input = Some((input, sub));
+        cx.notify();
     }
 
     /// T3 Connect: the user's phone or a browser reach the machine with their T3 account.
@@ -396,6 +538,38 @@ impl Panel {
                     .child(if d.connect { kit::ok("on", &tk).into_any_element() } else { button(self, "connect", model::connect(), cx).into_any_element() })
                     .into_any_element()];
                 if d.connect {
+                    let busy = pending.is_some() || m.state == State::Missing;
+                    let want = self.connect_want;
+                    let approval = want.filter(|(k, _)| *k == "approval").map_or(d.connect_approval.unwrap_or(false), |(_, on)| on);
+                    let push = want.filter(|(k, _)| *k == "push").map_or(d.connect_push.unwrap_or(false), |(_, on)| on);
+                    items.push(
+                        connect_switch(
+                            "approval",
+                            "Approve new devices",
+                            "A device that signs in to your T3 account waits until you approve it in T3 Code",
+                            approval,
+                            busy,
+                            m,
+                            model::connect_approval(!approval),
+                            &tk,
+                            cx,
+                        )
+                        .into_any_element(),
+                    );
+                    items.push(
+                        connect_switch(
+                            "push",
+                            "Push to your phone",
+                            "Agent activity as notifications and Live Activities in the T3 Code phone app, laptop closed or not",
+                            push,
+                            busy,
+                            m,
+                            model::connect_push(!push),
+                            &tk,
+                            cx,
+                        )
+                        .into_any_element(),
+                    );
                     items.push(
                         kit::line().child(div().flex_1().min_w_0().child("Wake link")).child(button(self, "wake-link", model::wake_link(), cx)).into_any_element(),
                     );
@@ -623,6 +797,61 @@ pub(super) fn segment(id: impl Into<ElementId>, first: bool, on: bool, tk: &Toke
         .when(!first, |s| s.border_l_1().border_color(tk.line))
         .when(on, |s| s.bg(tk.accent).text_color(tk.accent_fg))
         .when(!on, |s| s.hover(move |s| s.bg(panel)))
+}
+
+/// One of T3 Connect's switches, flipped optimistically on click.
+#[allow(clippy::too_many_arguments)]
+fn connect_switch(
+    key: &'static str,
+    label: &'static str,
+    hint: &'static str,
+    on: bool,
+    busy: bool,
+    m: &MachineView,
+    action: Action,
+    tk: &Tokens,
+    cx: &mut Context<Panel>,
+) -> impl IntoElement + use<> {
+    let m = m.clone();
+    div()
+        .id(SharedString::from(format!("connect-{key}")))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(16.))
+        .py(px(8.))
+        .when(!busy, |s| s.cursor_pointer())
+        .child(div().flex().flex_col().gap(px(2.)).min_w_0().child(label).child(kit::hint(hint, tk)))
+        .child(kit::switch(SharedString::from(format!("connect-{key}-switch")), on, busy, tk))
+        .when(!busy, |s| {
+            s.on_click(cx.listener(move |this, _, _, cx| {
+                this.connect_want = Some((key, !on));
+                this.track(&m, action.clone(), cx);
+            }))
+        })
+}
+
+/// GitHub's code, for as long as its sign-in waits: shown, so copying something else meanwhile
+/// doesn't lose it.
+fn github_code(code: String, tk: &Tokens, cx: &mut Context<Panel>) -> impl IntoElement + use<> {
+    let copy = code.clone();
+    line_note(tk)
+        .child("Enter this code on the GitHub page that opened:")
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .pt(px(4.))
+                .child(div().font_family(MONO).font_weight(FontWeight::SEMIBOLD).text_size(px(17.)).text_color(tk.fg).child(code))
+                .child(kit::link("copy-github-code", "Copy", false, tk).px_0().text_size(px(11.5)).on_click(cx.listener(move |this, _, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                    this.toast("GitHub code copied", false, cx);
+                })))
+                .child(kit::link("open-github-device", "Open page", false, tk).px_0().text_size(px(11.5)).on_click(|_, _, _| {
+                    let _ = t3agent37_lib::app::open_url("https://github.com/login/device");
+                })),
+        )
 }
 
 /// A sentence about the line above it: wraps instead of cutting off.

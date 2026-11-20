@@ -72,6 +72,8 @@ pub struct MachineView {
     /// When a "keep awake" runs out (unix ms); none when off or until stopped.
     pub keep_awake_until: Option<u64>,
     pub keep_awake_forever: bool,
+    /// GitHub's one-time code while a GitHub sign-in waits for it.
+    pub github_code: Option<String>,
 }
 
 /// `detail` as `template` with `{left}` filled in: the time left until `ends_at` (unix ms).
@@ -136,6 +138,8 @@ pub struct App {
     machines: RwLock<Vec<Running>>,
     creating: Mutex<Vec<Creating>>,
     balance: Mutex<Option<f64>>,
+    /// The low-wallet warning went out, and the balance hasn't been above its line since.
+    wallet_warned: Mutex<bool>,
     /// By sandbox id, gone sandboxes included: `Spend`.
     spend: Mutex<HashMap<String, Spend>>,
     retired_ports: Mutex<Vec<u16>>,
@@ -172,6 +176,7 @@ impl App {
             machines: RwLock::new(Vec::new()),
             creating: Mutex::new(Vec::new()),
             balance: Mutex::new(None),
+            wallet_warned: Mutex::new(false),
             spend: Mutex::new(state.spend),
             retired_ports: Mutex::new(state.retired_ports),
             leftover_sandboxes: Mutex::new(leftover),
@@ -230,6 +235,7 @@ impl App {
             }
         });
         let runner = tokio::spawn(machine.clone().run());
+        machine.start_forwards();
         self.machines.write().unwrap().push(Running { machine, tasks: vec![proxy, runner] });
     }
 
@@ -389,12 +395,13 @@ impl App {
     /// Code's "Add to another machine" does: cloned from its remote, with its env files. Resolves
     /// once cloned.
     pub async fn add_project(&self, machine: &MachineRuntime, project: &str) -> Result<crate::projects::Project> {
-        let project = self
+        let mut project = self
             .local_projects()
             .await?
             .into_iter()
             .find(|p| p.id == project || p.path == project || p.title.eq_ignore_ascii_case(project))
             .ok_or_else(|| anyhow!("no project {project} with a git remote"))?;
+        project.scripts = self.shared.t3.project_scripts(&project).await;
         let (files, mut failed) = self.shared.t3.files_to_copy(&project).await?;
         failed.extend(machine.add_project(&project, files).await?);
         if !failed.is_empty() {
@@ -475,6 +482,7 @@ impl App {
                 projects: Vec::new(),
                 keep_awake_until: None,
                 keep_awake_forever: false,
+                github_code: None,
             });
         }
         views
@@ -534,9 +542,26 @@ impl App {
         }
         if let Ok(b) = a37.billing().await {
             *self.balance.lock().unwrap() = Some(b.balance_usd);
+            self.check_wallet(b.balance_usd);
         }
         self.shared.persist();
         self.shared.changed();
+    }
+
+    /// Warns once when the wallet drops under the line set in Settings, and again only after it
+    /// was topped up above it.
+    fn check_wallet(&self, balance: f64) {
+        let Some(line) = self.settings().wallet_alert_usd else { return };
+        let mut warned = self.wallet_warned.lock().unwrap();
+        if balance >= line {
+            *warned = false;
+        } else if !*warned {
+            *warned = true;
+            self.shared.notify(
+                format!("Agent37 wallet: ${balance:.2} left"),
+                "Machines stop waking once it runs out. Top it up in the Agent37 dashboard.",
+            );
+        }
     }
 }
 
@@ -588,6 +613,14 @@ pub struct MachineDetails {
     pub created_at: i64,
     /// T3 Connect is on: other devices reach it with the user's T3 account.
     pub connect: bool,
+    /// T3 Connect's new devices wait for approval; None until read on the machine.
+    pub connect_approval: Option<bool>,
+    /// Agent activity goes to the T3 Code phone app; None until read on the machine.
+    pub connect_push: Option<bool>,
+    /// Servers T3 saw listening there when it last ran.
+    pub servers: Vec<crate::machine::preview::LocalServer>,
+    /// Its ports forwarded to this computer.
+    pub previews: Vec<crate::store::Preview>,
 }
 
 /// Its gh login shows as one more agent: what its git pushes and clones private repos with.
@@ -623,7 +656,49 @@ impl App {
             t3_version: record.t3_version,
             created_at: record.created_at,
             connect: record.connect,
+            connect_approval: record.connect_approval,
+            connect_push: record.connect_push,
+            servers: machine.local_servers(),
+            previews: record.previews,
         })
+    }
+
+    /// Forwards `port` on the machine to this computer and returns its address here,
+    /// `http://localhost:<port>`. `open`: in the default browser too, which wakes the machine.
+    pub async fn open_port(&self, machine: &Arc<MachineRuntime>, port: u16, open: bool) -> Result<String> {
+        let local = machine.forward(port)?;
+        let url = format!("http://localhost:{local}");
+        if open {
+            open_url(&url)?;
+        }
+        Ok(url)
+    }
+
+    /// Warns about a machine that has been awake for `awake_alert_hours` in a row, once per
+    /// stretch, with what holds it up.
+    pub fn check_awake_alerts(&self) {
+        let Some(hours) = self.settings().awake_alert_hours else { return };
+        for m in self.machines() {
+            let Some(since) = m.awake_since() else { continue };
+            let up = since.elapsed().unwrap_or_default();
+            if up.as_secs() < u64::from(hours) * 3600 || std::mem::replace(&mut *m.awake_warned.lock().unwrap(), true) {
+                continue;
+            }
+            let record = m.record();
+            let why = match m.watchdog_status() {
+                Some(w) if w.working_threads + w.working_subagents > 0 => "an agent is still working",
+                Some(w) if w.keep_awake_forever => "auto sleep is off",
+                Some(w) if w.keep_awake_secs > 0 => "it's kept awake",
+                Some(w) if w.cpu_busy => "something is busy on its CPU (a build or a job)",
+                Some(w) if w.agents_unknown => "T3 isn't answering there, so it can't tell if agents work",
+                _ => "it's in use",
+            };
+            let spent = provision::size(&record.size).map(|s| format!(", about ${:.2} so far", s.hourly * up.as_secs_f64() / 3600.0)).unwrap_or_default();
+            self.shared.notify(
+                format!("{} has been awake {}h", record.name, up.as_secs() / 3600),
+                format!("It's up because {why}{spent}. Sleep it from t3agent37 if that's not on purpose."),
+            );
+        }
     }
 
     /// Brings T3 Code forward on `thread`, or just to the front; an unpaired machine gets the
@@ -701,6 +776,7 @@ fn view(m: &MachineRuntime) -> MachineView {
             .filter(|w| w.keep_awake_secs > 0)
             .map(|w| unix_ms_after(w.received, w.keep_awake_secs)),
         keep_awake_forever: running_watchdog.is_some_and(|w| w.keep_awake_forever),
+        github_code: m.github_code(),
     }
 }
 

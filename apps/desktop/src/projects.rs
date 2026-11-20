@@ -21,6 +21,10 @@ pub struct Project {
     /// Where the project sits below its repository root, or "".
     #[serde(skip)]
     pub subdirectory: String,
+    /// Its T3 scripts (`ProjectScript`s: id, name, command, runOnWorktreeCreate, ...), which
+    /// T3's own "Add to another machine" leaves behind.
+    #[serde(skip)]
+    pub scripts: Vec<Value>,
     #[serde(skip)]
     pinned: bool,
     #[serde(skip)]
@@ -48,6 +52,7 @@ pub fn cloneable(shell: &Value) -> Vec<Project> {
                 icon: p["faviconPath"].as_str().and_then(|f| icon_data_url(&std::path::Path::new(&path).join(f))),
                 remote_url: remote_url.to_owned(),
                 subdirectory: subdirectory(identity["rootPath"].as_str(), &path),
+                scripts: p["scripts"].as_array().cloned().unwrap_or_default(),
                 pinned: !p["pinnedAt"].is_null(),
                 updated_at: p["updatedAt"].as_str().unwrap_or_default().to_owned(),
                 path,
@@ -162,6 +167,7 @@ mod tests {
             icon: None,
             remote_url: remote_url.into(),
             subdirectory: String::new(),
+            scripts: Vec::new(),
             pinned: false,
             updated_at: String::new(),
         }

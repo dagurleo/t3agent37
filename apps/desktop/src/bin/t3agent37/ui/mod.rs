@@ -99,6 +99,12 @@ pub struct Panel {
     signing_in: Option<String>,
     /// The auto sleep switch as clicked, until the machine says so too.
     power_want: Option<bool>,
+    /// A T3 Connect switch as clicked ("approval" or "push"), until the machine says so too.
+    connect_want: Option<(&'static str, bool)>,
+    /// The port whose Open runs.
+    opening_port: Option<u16>,
+    /// The previews section's "port" field, while it's open.
+    port_input: Option<(Entity<InputState>, Subscription)>,
     picker: Option<Picker>,
 
     new_form: Option<NewForm>,
@@ -196,6 +202,9 @@ impl Panel {
             more_open: false,
             signing_in: None,
             power_want: None,
+            connect_want: None,
+            opening_port: None,
+            port_input: None,
             picker: None,
             new_form: None,
             projects: Load::Loading,
@@ -270,6 +279,9 @@ impl Panel {
         if self.power_want.is_some() && !self.pending.values().any(|b| b.contains("auto sleep")) {
             self.power_want = None;
         }
+        if self.connect_want.is_some() && !self.pending.values().any(|b| b.contains("device approval") || b.contains("phone push")) {
+            self.connect_want = None;
+        }
         if self.login_want == Some(self.state.settings.start_at_login) {
             self.login_want = None;
         }
@@ -317,6 +329,9 @@ impl Panel {
         self.more_open = false;
         self.signing_in = None;
         self.power_want = None;
+        self.connect_want = None;
+        self.opening_port = None;
+        self.port_input = None;
         self.picker = None;
         self.new_form = None;
         self.details = None;
@@ -360,6 +375,9 @@ impl Panel {
             self.menu_confirm = false;
         } else if self.stay_awake_open {
             self.stay_awake_open = false;
+        } else if self.port_input.is_some() {
+            self.port_input = None;
+            self.focus.focus(window, cx);
         } else if self.picker.is_some() {
             self.picker = None;
             self.focus.focus(window, cx);
@@ -454,6 +472,10 @@ impl Panel {
                             format!("Wake link copied. Open it on your phone to wake {name}.")
                         };
                         this.toast(text, false, cx);
+                    }
+                    (Ok(Some(url)), Cmd::OpenPort(port)) => {
+                        let here = url.trim_start_matches("http://");
+                        this.toast(format!("Opened {here} · port {port} on {name}"), false, cx);
                     }
                     (Ok(_), Cmd::Open { .. }) if !paired => this.toast(accept_hint, false, cx),
                     (Ok(_), Cmd::Pair) => this.toast(accept_hint, false, cx),

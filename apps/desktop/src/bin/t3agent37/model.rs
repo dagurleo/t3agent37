@@ -92,6 +92,18 @@ pub fn sign_in_to(agent: &str) -> Action {
 pub fn resize_to(size: &str) -> Action {
     action(format!("Resize to {size}"), "Resizing…", Cmd::Resize(size.into()))
 }
+pub fn connect_approval(on: bool) -> Action {
+    action(if on { "Approve new devices" } else { "Let new devices in" }, "Changing device approval…", Cmd::ConnectApproval(on))
+}
+pub fn connect_push(on: bool) -> Action {
+    action(if on { "Push to phone" } else { "Stop pushing to phone" }, "Changing phone push…", Cmd::ConnectPush(on))
+}
+pub fn open_port(port: u16) -> Action {
+    action(format!("Open :{port}"), "Opening…", Cmd::OpenPort(port))
+}
+pub fn close_port(port: u16) -> Action {
+    action(format!("Stop forwarding :{port}"), "Stopping…", Cmd::ClosePort(port))
+}
 
 /// Opens the machine's latest thread in T3 Code, named so the button says where it goes.
 pub fn open_in(thread: Option<String>) -> Action {

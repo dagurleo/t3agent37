@@ -204,5 +204,8 @@ pub async fn create(
         connect: false,
         github_login: None,
         github_checked: false,
+        connect_approval: None,
+        connect_push: None,
+        previews: Vec::new(),
     })
 }

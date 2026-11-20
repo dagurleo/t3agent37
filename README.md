@@ -26,9 +26,12 @@ What was kept and what changed:
 - Create, resize and delete machines (Agent37 VMs: Ubuntu with Docker, 2–8 vCPU) from the menu bar
 - Add projects the way T3 Code's "Add to another machine" does, `.env` files included
 - Sign Claude Code, Codex and GitHub in on a machine with their own logins
-- T3 Connect, to reach a machine from your phone or a browser, plus a wake link for when it's asleep
+- T3 Connect, to reach a machine from your phone or a browser, plus a wake link for when it's asleep. Optionally, new devices wait for your approval, and agent activity is pushed to the T3 Code phone app
+- Previews: a dev server an agent starts on a machine opens in your own browser at `localhost`, through T3's tunnel. Opening the page wakes the machine; a tab left open doesn't keep it awake
+- Projects set up as they're added: their T3 setup scripts run, or their dependencies install from the lockfile (Bun, pnpm, Yarn, npm, uv and more), and their T3 scripts come along
+- Notifications when a machine's agents finish, when your Agent37 wallet runs low, and when a machine stays awake for hours
 - Cost per machine, today and this month, and your wallet balance
-- An MCP server, so agents on your computer can manage machines
+- An MCP server, so agents on your computer can manage machines and open their ports
 
 ## What you need
 
@@ -59,6 +62,10 @@ To use a machine from your phone:
 4. Tap the link, wait for "awake", then pick the machine in T3 Code.
 
 The wake link only wakes the machine and holds it up for 5 minutes. Using the machine still takes your T3 sign-in. **Replace link** retires the old link within about 10 seconds.
+
+To see what an agent built, open it under **previews** in the machine's details: servers its agents and terminals started are listed there, and **Open another port…** takes any port by number. Each one opens at `http://localhost:<port>` (the same number when it's free). While the machine sleeps, opening or reloading the page wakes it; anything a page sends on its own is dropped, so a forgotten tab never keeps waking it.
+
+Settings has the notifications (wallet line, hours awake, agents finishing) and whether projects get set up when they're added.
 
 ## Pricing, roughly
 
@@ -98,16 +105,21 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 - The wake link: about 1.3 s from asleep to page, with Connect reachable right after.
 - The redesign, in both themes.
 - The GPUI panel against the real account: the list, the ⋯ menu, details, the project picker, the new machine form (not launched), settings, toasts, dark mode, and a wake and a sleep.
+- Previews: listing, opening in Chrome, a port with nothing on it, a 20 MB transfer, and the sleep rules (a background request leaves the machine asleep; a page wakes it in about 5 s).
+- Project setup on a real add (Bun install from a frozen lockfile), and npm and pnpm on a bare machine.
+- T3 Connect's device approval and phone push switches, both ways.
+- The three notifications, the scrollbars, and the settings.
+- Linking a machine into T3 Code 0.1.12 for agents on this computer, and a call over the link waking it (about 5 s).
 
 **Not tried yet:**
 - Resize, delete, create, sign-ins, T3 Connect and the wake link from the GPUI panel. (They worked from the Tauri panel; the GPUI one calls the same backend functions.)
 - The GPUI panel's setup view (first run, no key yet).
+- The GitHub code in the panel during a sign-in (the machine was already signed in).
+- Copying a project's T3 scripts on a real add. The settings call it uses was tried by hand.
 - How long T3 Connect takes to come back after a machine has slept for many hours.
 
 **Known gaps:**
-- **GitHub sign-in copies its device code to the clipboard.** Copying anything else afterwards loses it. Showing the code in the panel would be better.
-- **T3 Connect's "require approval for new devices" option** is not turned on by the app.
-- **The panel has no scrollbars.** Its views scroll, but no bar shows.
+- **Previews list only servers T3's agents and terminals started.** Others (Docker, a database) open by number.
 
 ## Security
 

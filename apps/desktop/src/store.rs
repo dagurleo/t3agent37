@@ -52,6 +52,24 @@ pub struct Machine {
     /// Whether `github_login` was ever checked: unchecked, None means "don't know yet".
     #[serde(default)]
     pub github_checked: bool,
+    /// T3 Connect: new devices wait for approval from one already connected. None until read.
+    #[serde(default)]
+    pub connect_approval: Option<bool>,
+    /// T3 Connect: agent activity goes to the T3 Code phone app as push notifications and Live
+    /// Activities. None until read.
+    #[serde(default)]
+    pub connect_push: Option<bool>,
+    /// Its ports forwarded to this computer, in the order they were added.
+    #[serde(default)]
+    pub previews: Vec<Preview>,
+}
+
+/// A port on the machine that `localhost:local_port` reaches here.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Preview {
+    pub port: u16,
+    pub local_port: u16,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -66,13 +84,31 @@ pub struct LinkToken {
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     pub start_at_login: bool,
+    /// A warning when the Agent37 wallet drops below this many dollars; None: never.
+    pub wallet_alert_usd: Option<f64>,
+    /// A warning when a machine has been awake this many hours in a row; None: never.
+    pub awake_alert_hours: Option<u32>,
+    /// A notification when a machine's agents finish.
+    pub notify_finished: bool,
+    /// A project added to a machine gets its setup scripts run, or its dependencies installed.
+    pub set_up_projects: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { start_at_login: true }
+        Self {
+            start_at_login: true,
+            wallet_alert_usd: Some(5.0),
+            awake_alert_hours: Some(3),
+            notify_finished: true,
+            set_up_projects: true,
+        }
     }
 }
+
+/// The choices Settings offers.
+pub const WALLET_ALERTS: [Option<f64>; 4] = [None, Some(5.0), Some(10.0), Some(25.0)];
+pub const AWAKE_ALERTS: [Option<u32>; 4] = [None, Some(1), Some(3), Some(8)];
 
 /// One instance's spend as last looked up. Kept after the instance is gone (its machine deleted)
 /// so the totals still count it until its month is over.

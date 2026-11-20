@@ -48,8 +48,8 @@ let phase = "active";
 let lastActivityAt = Date.now();
 /** Last time an agent, the user or a keep-awake held it up: CPU load holds it only so long after. */
 let lastUsedAt = Date.now();
-/** Agent runs in flight: top-level threads and subagents. */
-let working = { threads: 0, subagents: 0 };
+/** Agent runs in flight: top-level threads and subagents, and the top-level ones by id and title. */
+let working = { threads: 0, subagents: 0, list: [] };
 // T3 not answering: an agent might be mid-turn, so count it as working, but only this long, so a
 // broken server cannot keep the machine billing.
 const UNKNOWN_BUSY_MS = 30 * 60_000;
@@ -71,7 +71,7 @@ async function refreshWorking() {
     unknownSince = 0;
     t3Answered = true;
   } catch (e) {
-    working = { threads: 0, subagents: 0 };
+    working = { threads: 0, subagents: 0, list: [] };
     if (t3Answered) unknownSince ||= Date.now();
     log(e.message);
   }
@@ -227,8 +227,10 @@ async function checkWorking() {
       t.pendingRuntimeRequest != null ||
       (t.pendingBackgroundTasks?.length ?? 0) > 0,
   );
-  const subagents = live.filter((t) => t.lineage?.relationshipToParent === "subagent").length;
-  return { threads: live.length - subagents, subagents };
+  const top = live.filter((t) => t.lineage?.relationshipToParent !== "subagent");
+  // Names the threads in t3agent37's "finished" notification.
+  const list = top.slice(0, 10).map((t) => ({ id: String(t.id ?? ""), title: String(t.title ?? "") }));
+  return { threads: top.length, subagents: live.length - top.length, list };
 }
 
 /** The orchestration high-water marks T3 itself compares resume cursors against. */
@@ -370,6 +372,7 @@ function status() {
     agentsUnknown: unknownBusy(),
     workingThreads: working.threads,
     workingSubagents: working.subagents,
+    working: working.list,
     keepAwakeForever: keepAwakeUntil === Infinity,
     keepAwakeSecs: Number.isFinite(keepAwakeUntil) ? Math.max(0, Math.ceil((keepAwakeUntil - Date.now()) / 1000)) : 0,
     idleSecs: Math.floor((Date.now() - lastActivityAt) / 1000),

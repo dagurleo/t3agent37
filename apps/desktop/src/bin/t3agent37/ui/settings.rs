@@ -1,18 +1,65 @@
 //! Settings and the first-run setup.
 
 use gpui_kit::component::input::Input;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use t3agent37_lib::app::Setup;
 use t3agent37_lib::mcp::Client;
 
-use super::details::sub_header;
+use t3agent37_lib::store::{AWAKE_ALERTS, Settings, WALLET_ALERTS};
+
+use super::details::{segment, sub_header};
 use super::kit::{self, Btn, Icon, Size};
 use super::{Panel, value};
 use crate::model;
 use crate::theme::{DISPLAY, MONO, Tokens};
 
 const CLIENTS: [(Client, &str); 2] = [(Client::ClaudeCode, "Claude Code"), (Client::Codex, "Codex")];
+
+/// A setting picked from a few choices: its label, then a segmented control.
+fn choices(
+    id: &'static str,
+    label: &'static str,
+    options: &[String],
+    on: Option<usize>,
+    tk: &Tokens,
+    cx: &mut Context<Panel>,
+    set: fn(&mut Settings, usize),
+) -> impl IntoElement + use<> {
+    let mut seg = div().flex().flex_none().w(px(196.)).border_1().border_color(tk.frame);
+    for (i, option) in options.iter().enumerate() {
+        seg = seg.child(
+            segment((id, i), i == 0, on == Some(i), tk)
+                .h(px(26.))
+                .child(option.clone())
+                .when(on != Some(i), |s| s.on_click(cx.listener(move |this, _, _, cx| this.change_settings(|s| set(s, i), cx)))),
+        );
+    }
+    div().flex().items_center().justify_between().gap(px(12.)).child(div().min_w_0().child(label)).child(seg)
+}
+
+/// A setting that is on or off, with a line on what it does.
+fn toggle(
+    id: &'static str,
+    label: &'static str,
+    hint: &'static str,
+    on: bool,
+    tk: &Tokens,
+    cx: &mut Context<Panel>,
+    set: fn(&mut Settings, bool),
+) -> impl IntoElement + use<> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(16.))
+        .cursor_pointer()
+        .child(div().flex().flex_col().gap(px(2.)).min_w_0().child(div().child(label)).child(kit::hint(hint, tk)))
+        .child(kit::switch(SharedString::from(format!("{id}-switch")), on, false, tk))
+        .on_click(cx.listener(move |this, _, _, cx| this.change_settings(|s| set(s, !on), cx)))
+}
 
 impl Panel {
     pub(super) fn render_settings(&mut self, tk: &Tokens, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -127,6 +174,55 @@ impl Panel {
                 }))
             });
 
+        let settings = state.settings.clone();
+        let wallet = choices(
+            "wallet-alert",
+            "Wallet runs low",
+            &WALLET_ALERTS.map(|v| v.map_or("Off".to_string(), |d| format!("${d:.0}"))),
+            WALLET_ALERTS.iter().position(|v| *v == settings.wallet_alert_usd),
+            &tk,
+            cx,
+            |s, i| s.wallet_alert_usd = WALLET_ALERTS[i],
+        );
+        let awake = choices(
+            "awake-alert",
+            "Awake too long",
+            &AWAKE_ALERTS.map(|v| v.map_or("Off".to_string(), |h| format!("{h}h"))),
+            AWAKE_ALERTS.iter().position(|v| *v == settings.awake_alert_hours),
+            &tk,
+            cx,
+            |s, i| s.awake_alert_hours = AWAKE_ALERTS[i],
+        );
+        let finished = toggle(
+            "notify-finished",
+            "Agents finish",
+            "A notification when a machine's agents are done",
+            settings.notify_finished,
+            &tk,
+            cx,
+            |s, on| s.notify_finished = on,
+        );
+        let alerts = div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .py(px(11.))
+            .border_t_1()
+            .border_color(tk.line)
+            .child(kit::caption(&tk).child("notify me when"))
+            .child(wallet)
+            .child(awake)
+            .child(finished);
+        let projects = div().flex().flex_col().gap(px(8.)).py(px(11.)).border_t_1().border_color(tk.line).child(kit::caption(&tk).child("projects")).child(toggle(
+            "set-up-projects",
+            "Set up projects after adding them",
+            "Runs the project's T3 setup scripts, or installs its dependencies from its lockfile",
+            settings.set_up_projects,
+            &tk,
+            cx,
+            |s, on| s.set_up_projects = on,
+        ));
+
         let account = state.account.as_ref().map(|a| {
             if a.past_due {
                 "Agent37 · past due: top up to wake machines".to_string()
@@ -143,7 +239,6 @@ impl Panel {
             .child(sub_header("Settings", &tk, cx))
             .child(
                 div()
-                    .id("settings-body")
                     .flex()
                     .flex_col()
                     .flex_1()
@@ -151,11 +246,14 @@ impl Panel {
                     .px(px(16.))
                     .pt(px(10.))
                     .pb(px(4.))
-                    .overflow_y_scroll()
                     .child(kit::hint("Machines sleep 5 minutes after their agents finish and wake by themselves when you use them in T3 Code.", &tk).pb(px(7.)))
                     .child(login)
                     .child(mcp)
-                    .child(version),
+                    .child(alerts)
+                    .child(projects)
+                    .child(version)
+                    .overflow_y_scrollbar()
+                    .id("settings-body"),
             )
             .child(
                 div()
@@ -172,6 +270,18 @@ impl Panel {
                     .child(div().min_w_0().font_family(MONO).text_size(px(11.)).text_color(tk.muted).children(account))
                     .child(kit::button("quit", Btn::Quiet, Size::Sm, false, &tk).child("Quit t3agent37").on_click(|_, _, cx| cx.quit())),
             )
+    }
+
+    /// Saves one change to the settings.
+    fn change_settings(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
+        let mut settings = self.state.settings.clone();
+        change(&mut settings);
+        // shown at once; the backend's next state agrees
+        self.state.settings = settings.clone();
+        if let Err(e) = self.backend.update_settings(settings) {
+            self.toast(e, true, cx);
+        }
+        cx.notify();
     }
 
     fn set_start_at_login(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -328,7 +438,6 @@ impl Panel {
             .min_h_0()
             .child(
                 div()
-                    .id("setup-body")
                     .flex()
                     .flex_col()
                     .gap(px(18.))
@@ -337,7 +446,6 @@ impl Panel {
                     .px(px(16.))
                     .pt(px(10.))
                     .pb(px(4.))
-                    .overflow_y_scroll()
                     .child(
                         div()
                             .flex()
@@ -346,7 +454,9 @@ impl Panel {
                             .child(div().font_family(DISPLAY).font_weight(FontWeight::SEMIBOLD).text_size(px(22.)).line_height(relative(1.1)).child("Get set up in two steps"))
                             .child(div().text_color(tk.muted).line_height(relative(1.5)).child("Then launch machines for T3 Code that sleep when no agent is working, billing disk alone.")),
                     )
-                    .child(list),
+                    .child(list)
+                    .overflow_y_scrollbar()
+                    .id("setup-body"),
             )
             .child(
                 div().flex_none().flex().flex_col().items_center().px(px(16.)).pt(px(10.)).pb(px(14.)).child(

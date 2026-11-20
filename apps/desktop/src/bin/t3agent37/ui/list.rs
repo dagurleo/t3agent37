@@ -3,6 +3,7 @@
 
 use std::time::Instant;
 
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use t3agent37_lib::app::{MachineState as State, MachineView};
@@ -75,7 +76,7 @@ impl Panel {
             .flex_1()
             .min_h_0()
             .child(head)
-            .child(div().id("list").flex_1().min_h_0().overflow_y_scroll().children(rows))
+            .child(div().flex_1().min_h_0().children(rows).overflow_y_scrollbar().id("list"))
             .into_any_element()
     }
 
