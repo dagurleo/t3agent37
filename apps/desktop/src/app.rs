@@ -628,6 +628,48 @@ pub struct MachineDetails {
     pub servers: Vec<crate::machine::preview::LocalServer>,
     /// Its ports forwarded to this computer.
     pub previews: Vec<crate::store::Preview>,
+    /// What its awake time cost per project, this UTC month and today, most first.
+    pub project_costs: Vec<ProjectCost>,
+}
+
+/// A project's share of a machine's awake time and what it cost at the machine's hourly rate.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCost {
+    /// None for awake time no project's work explains: waking, setup, a wake for nothing.
+    pub project_id: Option<String>,
+    pub title: String,
+    pub secs_today: u64,
+    pub secs_month: u64,
+    pub dollars_today: f64,
+    pub dollars_month: f64,
+}
+
+/// `usage` priced at `hourly` dollars, for `today` (UTC, `YYYY-MM-DD`): one entry per project
+/// with time this month, named from `projects` ("Removed project" when it's gone), most first,
+/// then the time no project explains.
+pub fn project_costs(usage: Option<&crate::store::ProjectUsage>, projects: &[crate::machine::projects::MachineProject], hourly: f64, today: &str) -> Vec<ProjectCost> {
+    let Some(u) = usage else { return Vec::new() };
+    // Counted on an earlier day: this month's and today's figures may not be this month's.
+    let same_month = u.day.get(..7) == today.get(..7);
+    let same_day = u.day == today;
+    let dollars = |secs: u64| secs as f64 * hourly / 3600.0;
+    let mut out: Vec<ProjectCost> = u
+        .month
+        .iter()
+        .filter(|_| same_month)
+        .filter(|(_, secs)| **secs > 0)
+        .map(|(id, &secs_month)| {
+            let secs_today = if same_day { u.today.get(id).copied().unwrap_or(0) } else { 0 };
+            let (project_id, title) = match id.as_str() {
+                "" => (None, "Other".to_owned()),
+                id => (Some(id.to_owned()), projects.iter().find(|p| p.id == id).map_or("Removed project".to_owned(), |p| p.title.clone())),
+            };
+            ProjectCost { project_id, title, secs_today, secs_month, dollars_today: dollars(secs_today), dollars_month: dollars(secs_month) }
+        })
+        .collect();
+    out.sort_by(|a, b| a.project_id.is_none().cmp(&b.project_id.is_none()).then(b.secs_month.cmp(&a.secs_month)));
+    out
 }
 
 /// Its gh login shows as one more agent: what its git pushes and clones private repos with.
@@ -685,6 +727,12 @@ impl App {
             connect_approval: record.connect_approval,
             connect_push: record.connect_push,
             servers: machine.local_servers(),
+            project_costs: project_costs(
+                record.usage.as_ref(),
+                &machine.projects(),
+                crate::machine::provision::size(&record.size).map_or(0.0, |s| s.hourly),
+                &chrono::Utc::now().format("%Y-%m-%d").to_string(),
+            ),
             previews: record.previews,
         })
     }
@@ -939,6 +987,32 @@ mod tests {
         assert_eq!(super::private_flag("org.mozilla.firefox"), Some("--private-window"));
         assert_eq!(super::private_flag("com.apple.Safari"), None);
         assert_eq!(super::private_flag("company.thebrowser.Browser"), None);
+    }
+
+    #[test]
+    fn project_costs() {
+        use crate::machine::projects::MachineProject;
+        use crate::store::ProjectUsage;
+        let project = |id: &str, title: &str| MachineProject { id: id.into(), title: title.into(), repo_key: None, status: None, issues: None };
+        let projects = [project("a", "Alpha"), project("b", "Beta")];
+        let usage = ProjectUsage {
+            day: "2026-11-22".into(),
+            today: [("a".into(), 1800), ("".into(), 60)].into(),
+            month: [("a".into(), 7200), ("b".into(), 10800), ("".into(), 600), ("gone".into(), 360), ("idle".into(), 0)].into(),
+        };
+        let costs = super::project_costs(Some(&usage), &projects, 0.05, "2026-11-22");
+        let titles: Vec<_> = costs.iter().map(|c| c.title.as_str()).collect();
+        // Most first, the time no project explains last, nothing for none.
+        assert_eq!(titles, ["Beta", "Alpha", "Removed project", "Other"]);
+        assert_eq!((costs[1].secs_today, costs[1].secs_month), (1800, 7200));
+        assert!((costs[1].dollars_month - 0.10).abs() < 1e-9);
+        assert!((costs[1].dollars_today - 0.025).abs() < 1e-9);
+        assert_eq!(costs[3].project_id, None);
+        // Counted yesterday: nothing today. Last month: nothing this month.
+        let costs = super::project_costs(Some(&usage), &projects, 0.05, "2026-11-23");
+        assert!(costs.iter().all(|c| c.secs_today == 0) && costs[0].secs_month == 10800);
+        assert!(super::project_costs(Some(&usage), &projects, 0.05, "2026-12-01").is_empty());
+        assert!(super::project_costs(None, &projects, 0.05, "2026-11-22").is_empty());
     }
 
     #[test]

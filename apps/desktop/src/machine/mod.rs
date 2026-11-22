@@ -17,7 +17,7 @@ use crate::proxy::cache::{self, Cache};
 use crate::proxy::classify;
 use crate::proxy::threads;
 use crate::proxy::upstream;
-use crate::store::{Machine, Settings};
+use crate::store::{Machine, ProjectUsage, Settings};
 use crate::t3desktop::T3Desktop;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -127,6 +127,9 @@ pub struct WatchdogStatus {
     #[serde(default)]
     pub work_due: bool,
     pub manifest: Option<Manifest>,
+    /// Awake time by project this month and today. Older watchdogs don't say.
+    #[serde(default)]
+    pub usage: Option<ProjectUsage>,
     /// When this app got the status: what its second counts are relative to.
     #[serde(skip, default = "SystemTime::now")]
     pub received: SystemTime,
@@ -976,6 +979,16 @@ impl MachineRuntime {
         }
         if self.record.read().unwrap().next_due_at != s.next_due_at {
             self.update_record(|r| r.next_due_at = s.next_due_at);
+        }
+        if let Some(usage) = &s.usage {
+            // Saved for while it sleeps: on a new day, each minute more, and as it goes to sleep.
+            let saved = self.record.read().unwrap().usage.clone();
+            let due = saved.as_ref().is_none_or(|old| {
+                old.day != usage.day || usage.month_secs() >= old.month_secs() + 60 || (s.phase != WatchdogPhase::Active && old != usage)
+            });
+            if due {
+                self.update_record(|r| r.usage = Some(usage.clone()));
+            }
         }
         let manifest = s.manifest.clone();
         let phase = s.phase;

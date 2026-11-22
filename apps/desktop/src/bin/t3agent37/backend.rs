@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use futures::channel::mpsc::UnboundedSender;
 use t3agent37_lib::agent37::{Agent37, KEYS_PAGE};
-pub use t3agent37_lib::app::AgentLogin;
+pub use t3agent37_lib::app::{AgentLogin, ProjectCost};
 use t3agent37_lib::app::{self, App, Costs, GITHUB, MachineView, Setup};
 use t3agent37_lib::machine::Event;
 use t3agent37_lib::machine::issues::{IssueSettings, ModelChoice};
@@ -88,6 +88,8 @@ pub struct Details {
     pub previews: Vec<Preview>,
     /// The models its signed-in agents offer, to work on GitHub issues with.
     pub issue_models: Vec<ModelChoice>,
+    /// What its awake time cost per project this month, most first.
+    pub project_costs: Vec<ProjectCost>,
 }
 
 /// A command for one machine.
@@ -258,6 +260,7 @@ impl Backend {
             servers: d.servers,
             previews: d.previews,
             issue_models,
+            project_costs: d.project_costs,
         })
     }
 

@@ -682,13 +682,16 @@ impl Panel {
         let busy = pending.is_some() || gone;
         let want = self.issues_want.clone();
         let choices = self.details.as_ref().filter(|d| d.id == m.id).map(|d| d.issue_models.clone()).unwrap_or_default();
+        let costs = self.details.as_ref().filter(|d| d.id == m.id).map(|d| d.project_costs.clone()).unwrap_or_default();
         let on_github = |p: &MachineProject| p.status.is_none() && p.repo_key.as_deref().and_then(issues::github_repo).is_some();
         let mut items: Vec<AnyElement> = Vec::new();
         for (i, p) in m.projects.iter().enumerate() {
             let on = want.as_ref().filter(|(id, _)| *id == p.id).map_or(p.issues.is_some(), |(_, on)| *on);
             let form_here = self.issues_form.as_ref().is_some_and(|f| f.machine == m.id && f.project == p.id);
+            let cost = costs.iter().find(|c| c.project_id.as_deref() == Some(p.id.as_str())).filter(|_| p.status.is_none()).map(model::project_cost);
             let line = kit::line()
                 .child(div().flex_1().min_w_0().truncate().child(p.title.clone()))
+                .when_some(cost, |l, cost| l.child(kit::caption(&tk).flex_none().child(cost)))
                 .when_some(p.status.clone(), |l, status| {
                     l.child(
                         kit::caption(&tk)
@@ -711,6 +714,10 @@ impl Panel {
         }
         if m.projects.is_empty() && !gone {
             items.push(kit::line().child(div().flex_1().text_color(tk.muted).child("Cloned from its git remote, .env files included")).into_any_element());
+        }
+        let ids: Vec<&str> = m.projects.iter().map(|p| p.id.as_str()).collect();
+        if let Some(note) = model::project_costs_note(&costs, &ids) {
+            items.push(line_note(&tk).child(note).into_any_element());
         }
         if m.projects.iter().any(on_github) {
             let note = if m.projects.iter().any(|p| p.issues.is_some()) {

@@ -13,7 +13,7 @@
 // laptop app, if it runs, sleeps the VM right away through the API; otherwise auto-sleep does.
 
 import { createServer } from "node:http";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { availableParallelism, homedir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +23,13 @@ const HOME = homedir();
 const CONFIG_PATH = join(HOME, ".t3agent37", "config.json");
 // On disk, so it survives watchdog restarts (upgrades); a stop ends it (see BOOT_ID).
 const KEEP_AWAKE_PATH = join(HOME, ".t3agent37", "keep-awake-until");
+// Awake time by UTC day and project: { "YYYY-MM-DD": { "<projectId>": secs, "": secs } }. A tick's
+// time goes to the projects whose threads work then; idle time after work, to the projects that
+// worked last since the wake (their turns are why it's still up); the rest to "" (waking, setup,
+// a wake for nothing). Kept USAGE_KEEP_DAYS, saved every USAGE_SAVE_MS and before it sleeps.
+const USAGE_PATH = join(HOME, ".t3agent37", "usage.json");
+const USAGE_KEEP_DAYS = 62;
+const USAGE_SAVE_MS = 30_000;
 const MAX_KEEP_AWAKE_MINUTES = 24 * 60;
 const DB_PATH = join(HOME, ".t3", "userdata", "statev2.sqlite");
 const T3_ORIGIN = "http://127.0.0.1:3773";
@@ -59,8 +66,19 @@ let wokeAt = 0;
 let usedSinceWake = true;
 let briefWake = false;
 let ignoredAt = 0;
+let usage = (() => {
+  try {
+    return JSON.parse(readFileSync(USAGE_PATH, "utf8"));
+  } catch {
+    return {};
+  }
+})();
+let usageSavedAt = Date.now();
+let meteredAt = Date.now();
+/** The projects the latest work since the wake was for. */
+let lastProjects = [];
 /** Agent runs in flight: top-level threads and subagents, and the top-level ones by id and title. */
-let working = { threads: 0, subagents: 0, list: [] };
+let working = { threads: 0, subagents: 0, list: [], projects: [] };
 // T3 not answering: an agent might be mid-turn, so count it as working, but only this long, so a
 // broken server cannot keep the machine billing.
 const UNKNOWN_BUSY_MS = 30 * 60_000;
@@ -84,7 +102,7 @@ async function refreshWorking() {
     if (!t3Answered) inbox.catchUp();
     t3Answered = true;
   } catch (e) {
-    working = { threads: 0, subagents: 0, list: [] };
+    working = { threads: 0, subagents: 0, list: [], projects: [] };
     if (t3Answered) unknownSince ||= Date.now();
     log(e.message);
   }
@@ -243,7 +261,8 @@ async function checkWorking() {
   const top = live.filter((t) => t.lineage?.relationshipToParent !== "subagent");
   // Names the threads in t3agent37's "finished" notification.
   const list = top.slice(0, 10).map((t) => ({ id: String(t.id ?? ""), title: String(t.title ?? "") }));
-  return { threads: top.length, subagents: live.length - top.length, list };
+  const projects = [...new Set(live.map((t) => String(t.projectId ?? "")).filter(Boolean))];
+  return { threads: top.length, subagents: live.length - top.length, list, projects };
 }
 
 /** The orchestration high-water marks T3 itself compares resume cursors against. */
@@ -311,8 +330,47 @@ function hold(reason) {
   manifest = null;
 }
 
+/** Adds the time since the last tick to the projects it went to (see USAGE_PATH). */
+function meter(now) {
+  const gap = now - meteredAt;
+  meteredAt = now;
+  // A longer gap was a sleep: one tick of it was awake.
+  const secs = (gap > RESUMED_GAP_MS ? TICK_MS : gap) / 1000;
+  if (secs <= 0) return;
+  if (working.projects.length) lastProjects = working.projects;
+  const to = lastProjects.length ? lastProjects : [""];
+  const day = (usage[new Date(now).toISOString().slice(0, 10)] ??= {});
+  for (const p of to) day[p] = (day[p] ?? 0) + secs / to.length;
+  if (now - usageSavedAt >= USAGE_SAVE_MS) saveUsage(now);
+}
+
+function saveUsage(now = Date.now()) {
+  usageSavedAt = now;
+  const oldest = new Date(now - USAGE_KEEP_DAYS * 86_400_000).toISOString().slice(0, 10);
+  for (const day of Object.keys(usage)) if (day < oldest) delete usage[day];
+  try {
+    writeFileSync(`${USAGE_PATH}.tmp`, JSON.stringify(usage));
+    renameSync(`${USAGE_PATH}.tmp`, USAGE_PATH);
+  } catch (e) {
+    log("saving usage", e.message);
+  }
+}
+
+/** This UTC month's and today's awake seconds per project, for the app. */
+function usageSummary(now) {
+  const today = new Date(now).toISOString().slice(0, 10);
+  const month = {};
+  for (const [day, projects] of Object.entries(usage)) {
+    if (!day.startsWith(today.slice(0, 7))) continue;
+    for (const [p, secs] of Object.entries(projects)) month[p] = (month[p] ?? 0) + secs;
+  }
+  const whole = (o) => Object.fromEntries(Object.entries(o).map(([p, secs]) => [p, Math.round(secs)]));
+  return { day: today, today: whole(usage[today] ?? {}), month: whole(month) };
+}
+
 /** Goes quiet so the VM can sleep: the laptop app sleeps it now, or auto-sleep in a few minutes. */
 function stopSelf() {
+  saveUsage();
   phase = "stopping";
   stopRequestedAt = Date.now();
   log("stopping: heartbeat off");
@@ -344,10 +402,12 @@ async function tick() {
     wokeAt = now;
     usedSinceWake = false;
     briefWake = now - ignoredAt < BRIEF_WINDOW_MS;
+    lastProjects = [];
     touch("resumed");
     inbox.catchUp();
   }
   lastTickAt = now;
+  meter(now);
   if (phase === "stopping") {
     if (now - stopRequestedAt > STOP_SETTLE_MS) return touch("still running after stop");
     // Until the VM actually sleeps, use from elsewhere (a phone through T3 Connect, an agent
@@ -408,6 +468,7 @@ function status() {
     keepAwakeSecs: Number.isFinite(keepAwakeUntil) ? Math.max(0, Math.ceil((keepAwakeUntil - Date.now()) / 1000)) : 0,
     idleSecs: Math.floor((Date.now() - lastActivityAt) / 1000),
     sleepAfterSecs: briefWake ? Math.min(BRIEF_SLEEP_MS / 1000, config.sleepAfterSecs) : config.sleepAfterSecs,
+    usage: usageSummary(Date.now()),
     nextDueAt,
     workDue: dueSoon(),
     // While stopping, it names the sequence the machine stops at: the proxy trusts its

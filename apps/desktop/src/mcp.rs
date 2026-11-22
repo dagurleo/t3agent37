@@ -355,7 +355,10 @@ fn tool_list() -> Value {
             "One machine's cost today and this month, time awake today, which agents are signed in \
              there and as whom (email and plan; for Claude and Codex also the plan's usage limits, \
              usedPercent per window, as last checked; GitHub's login), its T3 version and creation time, whether T3 Connect is on, the servers T3 saw \
-             listening there (servers) and its ports forwarded to this computer (previews). Never wakes it.",
+             listening there (servers), its ports forwarded to this computer (previews), and its awake \
+             time and cost per project this UTC month and today (projectCosts, at the machine's hourly \
+             rate; a project gets the time its agents worked and the idle minutes after; projectId \
+             null is time no project explains). Never wakes it.",
             json!({ "machine": machine }),
             &["machine"],
         ),

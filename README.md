@@ -33,7 +33,7 @@ What was kept and what changed:
 - Projects set up as they're added: their T3 setup scripts run, or their dependencies install from the lockfile (Bun, pnpm, Yarn, npm, uv and more), and their T3 scripts come along
 - GitHub issues as pull requests (a prototype): turn on **issues** for a project, pick the label and the agent, label an issue, and the machine wakes, works on it in a branch of its own and opens a pull request. Reviews, `/agent` comments and failed CI on that pull request go back to the agent, which pushes fixes to it
 - Notifications when a machine's agents finish, when your Agent37 wallet runs low, and when a machine stays awake for hours
-- Cost per machine, today and this month, and your wallet balance
+- Cost per machine, today and this month, and your wallet balance. Each machine's details also show what each of its projects cost this month: the time its agents worked, plus the idle minutes after, at the machine's hourly rate
 - An MCP server, so agents on your computer can manage machines and open their ports
 
 ## What you need
@@ -135,6 +135,7 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 - A sleeping machine that worked on issues stays asleep when T3 Code reconnects. T3 Code asks for the issue's details then, and the last answer is kept for that.
 - Choosing the label and the agent (through the MCP tool): changing them kept the webhook and its secret and made the new label. An issue given the old label was left alone; the new label started a thread on Claude Sonnet 5.5 at low effort, which opened a pull request.
 - Feedback on the agent's pull requests, on a private repo: a `/agent` comment, a review with a line comment and a failed Cloudflare Workers build each reached the issue's thread about 30 s later (the build's failure 1.5 minutes after the push that broke it). Each time the agent pushed a fix to the branch (for the build, a revert of the breaking commit) and replied once; its replies started no new round. Webhooks made before this got the new events on the inbox's first start, and pull requests already open were taken as seen. A plain comment (no `/agent`) on a sleeping machine's repo woke it, and it slept again about 70 s later instead of after 5 minutes.
+- Cost per project, on skiff: an agent turn in one project counted for it, the idle minute after it too, and the wake before it as other time; the app showed both, priced at the machine's rate.
 - Accounts per machine, on the machine's side: the account, plan and usage limits read from what T3 recorded on skiff. Starting Claude's and GitHub's logins again over an existing sign-in, then canceling, kept the old sign-in, and the login's end was recorded.
 - T3 Code's own update, on the machine's side: switching a running machine to T3's service launcher (T3 Connect came back by itself), the server then reporting that it can update itself, T3's update call taking it from one nightly to the next (back in about 5 s), provisioning afterwards with the older desktop version keeping the newer T3 without a restart, and a reboot of the boot container starting the new version.
 
@@ -146,11 +147,13 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 - How long T3 Connect takes to come back after a machine has slept for many hours.
 - The **issues** switch and its settings in the panel. The same calls worked through the MCP tool (`github_issues`): off, on, and changing the label and the agent.
 - Finishing a switch to another account in the browser, the private window opening, and the agents section in the panel itself. Also, signing Codex in over an existing sign-in.
+- The projects' costs in the panel's details (the same figures came through the MCP tool).
 - The "Update N machines?" dialog in T3 Code updating a machine through the proxy (the same update call was made on the machine itself). Also, under the launcher: creating a machine, moving one to a newer desktop version by provisioning, and turning on T3 Connect.
 
 **Known gaps:**
 - **Previews list only servers T3's agents and terminals started.** Others (Docker, a database) open by number.
 - **GitHub issues are a prototype.** Only an issue's title and description go to the agent, not its comments. On the pull request, CI counts through check runs (GitHub Actions, Cloudflare and other GitHub apps), not the older commit statuses some services post, and only the first 100 reviews and comments are read. The machine's GitHub login covers all its repos: there's no token limited to one repo yet. A label renamed in the settings leaves the old one in the repo.
+- **Project costs are an estimate.** They're awake time at the machine's current hourly rate, so a resize reprices the month, and the disk (billed asleep too) isn't split between projects. Time with several projects' agents working is split evenly between them.
 - **Usage limits are as of the machine's last check.** T3 checks them while the machine is awake, so a sleeping machine's details say how old they are, and use of the same plan elsewhere (your laptop, another machine) shows up only at the next check.
 - **The machine's model list, as t3agent37 records it, once lost Claude's models** for about a minute after T3 re-checked its providers (cause not found; see CONTRIBUTING.md). The issue settings fall back on the last full list.
 

@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -65,6 +65,25 @@ pub struct Machine {
     /// Its projects whose GitHub issues it works on (`machine/issues.rs`).
     #[serde(default)]
     pub issues: Vec<IssueWatch>,
+    /// Its awake time by project, as its watchdog last said (kept for while it sleeps).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ProjectUsage>,
+}
+
+/// Awake time by project, as a machine's watchdog meters it: seconds per project id this UTC
+/// month and today, "" for time no project's work explains (waking, setup, a wake for nothing).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct ProjectUsage {
+    /// The UTC day it was counted up to, `YYYY-MM-DD`.
+    pub day: String,
+    pub today: BTreeMap<String, u64>,
+    pub month: BTreeMap<String, u64>,
+}
+
+impl ProjectUsage {
+    pub fn month_secs(&self) -> u64 {
+        self.month.values().sum()
+    }
 }
 
 /// A project whose GitHub repo sends its issues to the machine through a webhook.

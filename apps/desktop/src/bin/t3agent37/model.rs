@@ -3,7 +3,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use t3agent37_lib::app::{AgentLogin, MachineState as State, MachineView};
+use t3agent37_lib::app::{AgentLogin, MachineState as State, MachineView, ProjectCost};
 use t3agent37_lib::machine::signin::Account;
 use t3agent37_lib::machine::issues::IssueSettings;
 use t3agent37_lib::machine::provision::SizeInfo;
@@ -329,6 +329,31 @@ pub fn money(n: f64) -> String {
     format!("${n:.2}")
 }
 
+/// Money that may be under a cent: "<$0.01" rather than "$0.00".
+pub fn cents(n: f64) -> String {
+    if n > 0.0 && n < 0.005 { "<$0.01".to_owned() } else { money(n) }
+}
+
+/// A project's month on a machine: "2h 10m · $0.11".
+pub fn project_cost(c: &ProjectCost) -> String {
+    format!("{} · {}", duration(c.secs_month), cents(c.dollars_month))
+}
+
+/// Under a machine's projects: what their costs count, and the time no project of the machine's
+/// (`project_ids`) explains. None before anything was counted.
+pub fn project_costs_note(costs: &[ProjectCost], project_ids: &[&str]) -> Option<String> {
+    if costs.is_empty() {
+        return None;
+    }
+    let other: Vec<&ProjectCost> = costs.iter().filter(|c| c.project_id.as_deref().is_none_or(|id| !project_ids.contains(&id))).collect();
+    let mut note = "This month's awake time per project, idle minutes after its agents worked included, at the machine's hourly rate.".to_owned();
+    let (secs, dollars) = other.iter().fold((0, 0.0), |(s, d), c| (s + c.secs_month, d + c.dollars_month));
+    if secs >= 60 {
+        note.push_str(&format!(" Other time (waking, setup, removed projects): {} · {}.", duration(secs), cents(dollars)));
+    }
+    Some(note)
+}
+
 pub fn hourly(n: f64) -> String {
     if n < 0.1 { format!("${n:.3}/h") } else { format!("${n:.2}/h") }
 }
@@ -419,6 +444,25 @@ mod tests {
         let github = AgentLogin { name: "GitHub".into(), signed_in: true, account: Account::default(), login: Some("octocat".into()) };
         assert_eq!(account_line(&github).as_deref(), Some("@octocat"));
         assert_eq!(usage_line(&github.account, now), None);
+    }
+
+    #[test]
+    fn project_cost_words() {
+        let cost = |id: Option<&str>, secs: u64, dollars: f64| ProjectCost {
+            project_id: id.map(str::to_owned),
+            title: String::new(),
+            secs_today: 0,
+            secs_month: secs,
+            dollars_today: 0.0,
+            dollars_month: dollars,
+        };
+        assert_eq!(project_cost(&cost(Some("a"), 7800, 0.106)), "2h 10m · $0.11");
+        assert_eq!(project_cost(&cost(Some("a"), 300, 0.004)), "5m · <$0.01");
+        assert_eq!(project_costs_note(&[], &["a"]), None);
+        let costs = [cost(Some("a"), 7800, 0.106), cost(Some("gone"), 600, 0.008), cost(None, 900, 0.012)];
+        let note = project_costs_note(&costs, &["a"]).unwrap();
+        assert!(note.ends_with("Other time (waking, setup, removed projects): 25m · $0.02."), "{note}");
+        assert!(!project_costs_note(&costs[..1], &["a"]).unwrap().contains("Other"));
     }
 
     #[test]
