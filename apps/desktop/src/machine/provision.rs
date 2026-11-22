@@ -11,6 +11,10 @@ use serde::Deserialize;
 const PROVISION_SH: &str = include_str!("provision.sh");
 const WATCHDOG_MJS: &str = include_str!("watchdog.mjs");
 const ISSUES_MJS: &str = include_str!("issues.mjs");
+const START_MJS: &str = include_str!("start.mjs");
+/// This app's version, which provisioning leaves on the machine so an older t3agent37 on another
+/// computer doesn't put its older scripts back.
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const T3_PORT: u16 = 3773;
 pub const WATCHDOG_PORT: u16 = 3774;
 /// The watchdog answers its own heartbeat here, through a public URL: that traffic is what keeps
@@ -19,13 +23,14 @@ pub const HEARTBEAT_PORT: u16 = 3775;
 /// The wake link's port: a public URL of its own (so replacing it leaves the heartbeat alone)
 /// that a phone opens to wake the machine. The watchdog answers it with a page and nothing else.
 pub const WAKE_PORT: u16 = 3776;
-/// The GitHub inbox's port (`issues.mjs`, in the watchdog): a public URL of its own, made when the
-/// first repo's issues are turned on, that GitHub's webhooks deliver to.
+/// The inbox's port (`issues.mjs`, in the watchdog): a public URL of its own, made when the first
+/// repo's issues, webhook task or the start URL needs it. GitHub's webhooks deliver there, and
+/// the start URL (`start.mjs`) is a path on it.
 pub const INBOX_PORT: u16 = 3777;
 
 /// Identifies the provisioning scripts; a machine provisioned with others gets them on wake.
 pub fn revision() -> String {
-    let scripts = PROVISION_SH.bytes().chain(WATCHDOG_MJS.bytes()).chain(ISSUES_MJS.bytes());
+    let scripts = PROVISION_SH.bytes().chain(WATCHDOG_MJS.bytes()).chain(ISSUES_MJS.bytes()).chain(START_MJS.bytes());
     let hash = fnv1a(scripts.chain(SLEEP_AFTER_SECS.to_string().bytes()));
     format!("{hash:016x}")
 }
@@ -38,7 +43,11 @@ pub fn fnv1a(bytes: impl IntoIterator<Item = u8>) -> u64 {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Provisioned {
-    pub environment_id: String,
+    pub environment_id: Option<String>,
+    /// A newer t3agent37 (on another computer) provisioned the machine: its version. Nothing was
+    /// changed, so as not to take its features away.
+    #[serde(default)]
+    pub skipped: Option<String>,
     /// The T3 version left running: the one asked for, or a newer one that T3 Code's own update
     /// put there (provision.sh never takes a machine back). Older scripts didn't say.
     pub t3_version: Option<String>,
@@ -148,17 +157,19 @@ pub async fn run(
     let script = format!(
         "set -e; d=$(mktemp -d); trap 'rm -rf \"$d\"' EXIT\n\
          echo {p} | base64 -d > \"$d/provision.sh\"; echo {w} | base64 -d > \"$d/watchdog.mjs\"\n\
-         echo {i} | base64 -d > \"$d/issues.mjs\"\n\
-         T3A37_SECRET={s} bash \"$d/provision.sh\" {v} {sleep} {hb} {mint} {name}\n",
+         echo {i} | base64 -d > \"$d/issues.mjs\"; echo {st} | base64 -d > \"$d/start.mjs\"\n\
+         T3A37_SECRET={s} bash \"$d/provision.sh\" {v} {sleep} {hb} {mint} {name} {app}\n",
         p = b64(PROVISION_SH),
         w = b64(WATCHDOG_MJS),
         i = b64(ISSUES_MJS),
+        st = b64(START_MJS),
         v = shell_word(t3_version)?,
         s = shell_word(watchdog_secret)?,
         sleep = SLEEP_AFTER_SECS,
         hb = agent37::shell_quote(heartbeat_url),
         mint = u8::from(mint_upstream_token),
         name = shell_word(name)?,
+        app = shell_word(APP_VERSION)?,
     );
     let out = a37.exec_ok(instance, &script, 600).await?;
     let line = out
@@ -257,7 +268,7 @@ pub async fn create(
         local_port,
         t3_version: provisioned.t3_version.unwrap_or_else(|| t3_version.to_owned()),
         provision_revision: revision(),
-        environment_id: provisioned.environment_id,
+        environment_id: provisioned.environment_id.ok_or_else(|| anyhow!("provisioning gave no environment id"))?,
         client_tokens: Vec::new(),
         link_tokens: Vec::new(),
         created_at: chrono::Utc::now().timestamp(),
@@ -265,6 +276,8 @@ pub async fn create(
         connect: false,
         github_login: None,
         github_checked: false,
+        github_reach: None,
+        github_token_expires: None,
         connect_approval: None,
         connect_push: None,
         previews: Vec::new(),
@@ -272,6 +285,7 @@ pub async fn create(
         usage: None,
         inbox_url: None,
         hooks: Vec::new(),
+        start: None,
     })
 }
 

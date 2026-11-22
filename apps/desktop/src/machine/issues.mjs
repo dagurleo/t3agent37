@@ -3,7 +3,8 @@
 // for T3's own webhook tasks (scheduled tasks triggered by a webhook) at their path, /api/hooks/
 // <task>/<token>, and passes them to T3 here: through this public URL a delivery wakes the
 // machine, where T3's own URL (through T3 Connect's relay) waits until something else wakes it.
-// T3 checks the token, signature and filters, logs the delivery and runs the task.
+// T3 checks the token, signature and filters, logs the delivery and runs the task. And it serves
+// the machine's start URL (start.mjs), which starts threads in its projects from anywhere.
 //
 // For each repo the user turned issues on for, t3agent37 makes a webhook on GitHub (with this
 // machine's own gh login) that sends the repo's issue, comment, review and CI events to a public
@@ -34,6 +35,7 @@ import { readFileSync, writeFileSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isStartPath, startHandler } from "./start.mjs";
 
 export const INBOX_PORT = 3777;
 const DIR = join(homedir(), ".t3agent37");
@@ -281,6 +283,25 @@ export function reviewCounts(review) {
   return (review.state === "COMMENTED" || review.state === "CHANGES_REQUESTED") && !(review.body ?? "").includes(MARK);
 }
 
+/** GitHub Actions' workflow runs in the shape of check runs, for `ciVerdict`. */
+export function actionsAsRuns(workflowRuns) {
+  return (workflowRuns ?? []).map((r) => ({ name: r.name, status: r.status, conclusion: r.conclusion, html_url: r.html_url }));
+}
+
+/**
+ * The CI runs on a commit: its check runs (GitHub Actions, Cloudflare and other GitHub apps).
+ * A fine-grained token can't read the Checks API, so with one the machine reads the commit's
+ * GitHub Actions runs instead, and other apps' checks go unseen.
+ */
+async function ciRuns(repo, sha) {
+  try {
+    return (await gh(`repos/${repo}/commits/${sha}/check-runs?per_page=100`))?.check_runs ?? [];
+  } catch (e) {
+    if (!/HTTP 403|not accessible/i.test(e.message)) throw e;
+    return actionsAsRuns((await gh(`repos/${repo}/actions/runs?head_sha=${sha}&per_page=100`))?.workflow_runs);
+  }
+}
+
 /** What CI says about a commit, from its check runs. */
 export function ciVerdict(runs) {
   if (!runs.length) return { state: "none" };
@@ -367,7 +388,7 @@ async function checkPr(repo, key, { touch, log }) {
   }
   const reviews = ((await gh(`repos/${repo}/pulls/${number}/reviews?per_page=100`)) ?? []).filter((r) => r.state !== "PENDING");
   const comments = (await gh(`repos/${repo}/issues/${number}/comments?per_page=100`)) ?? [];
-  const runs = (await gh(`repos/${repo}/commits/${pr.head.sha}/check-runs?per_page=100`))?.check_runs ?? [];
+  const runs = await ciRuns(repo, pr.head.sha);
   // Issues taken on before the machine passed feedback on: what's there already isn't news.
   if (!entry.seen) {
     updateEntry(key, { pr: number, seen: { reviews: reviews.map((r) => r.id).slice(-MAX_SEEN_REVIEWS), comment: maxId(comments) }, ci: { sha: pr.head.sha, tries: 0 } });
@@ -520,6 +541,7 @@ async function catchUp(hooks) {
  */
 export function startInbox({ touch, log, wokeForNothing = () => {} }) {
   const hooks = { touch, log };
+  const handleStart = startHandler();
   let queue = Promise.resolve();
   // One at a time: a delivery and a catch-up never take the same issue on twice.
   const enqueue = (job) => (queue = queue.then(job).catch((e) => log(`issues: ${e.message}`)));
@@ -556,6 +578,7 @@ export function startInbox({ touch, log, wokeForNothing = () => {} }) {
       if (size > MAX_BODY) return refuse(413, "too large");
       const body = Buffer.concat(chunks);
       if (req.url?.startsWith(HOOKS_PREFIX)) return forwardHook(req, body, res, { log, wokeForNothing });
+      if (isStartPath(req.url)) return handleStart(req, body, res, { touch, log, wokeForNothing, run, waitForT3, machineName: machineName() });
       if (req.method !== "POST") return refuse(405, "POST only");
       const { repos } = readConfig();
       const repo = Object.keys(repos).find((r) => signedWith(repos[r].secret, body, req.headers["x-hub-signature-256"]));

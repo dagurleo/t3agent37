@@ -120,6 +120,9 @@ pub struct Instance {
     pub past_due: bool,
     #[serde(default)]
     pub metadata: Option<Value>,
+    /// When it was created, unix seconds.
+    #[serde(default)]
+    pub created: Option<i64>,
 }
 
 impl Instance {

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Runs on an Agent37 VM (agent37-ubuntu) as root. Idempotent; also used to upgrade a machine.
-#   T3A37_SECRET=<watchdog-secret> provision.sh <t3-version> <sleep-after-secs> <heartbeat-url> <mint-upstream-token:0|1> <name>
-# Expects watchdog.mjs and issues.mjs next to it. Prints one JSON line:
-# {"environmentId", "t3Version" (what runs: the one asked for, or a newer one found), "upstreamToken"?}.
+#   T3A37_SECRET=<watchdog-secret> provision.sh <t3-version> <sleep-after-secs> <heartbeat-url> <mint-upstream-token:0|1> <name> [<app-version>]
+# Expects watchdog.mjs, issues.mjs and start.mjs next to it. Prints one JSON line:
+# {"environmentId", "t3Version" (what runs: the one asked for, or a newer one found), "upstreamToken"?},
+# or {"environmentId", "skipped": <version>} when a newer t3agent37 provisioned it (below).
 #
 # Only $HOME (/root) is the machine's billed, persistent disk, so everything lives there.
 #
@@ -13,7 +14,7 @@
 # A sleep keeps them running as they were; only a cold boot (start, resize, a move) reruns it.
 set -euo pipefail
 
-version="$1" sleep_after="$2" heartbeat="$3" mint_upstream="$4" name="$5"
+version="$1" sleep_after="$2" heartbeat="$3" mint_upstream="$4" name="$5" app_version="${6:-}"
 secret="$T3A37_SECRET"
 here="$(cd "$(dirname "$0")" && pwd)"
 export HOME=/root
@@ -23,6 +24,24 @@ dir="$HOME/.t3agent37"
 mkdir -p "$dir" "$bin" "$HOME/.t3/userdata"
 chmod 700 "$dir"
 export PATH="$bin:$PATH"
+
+# t3agent37 on several computers can share a machine. One with an older app leaves the scripts a
+# newer one put here alone: its own would take that one's features away. Versions as x.y.z; one
+# that doesn't read that way never holds anything back.
+if [ -n "$app_version" ] && [ -f "$dir/app-version" ] && ! OURS="$app_version" node -e '
+  const p = (v) => String(v).trim().split(/[-+]/)[0].split(".").map((n) => Number.parseInt(n, 10));
+  const ours = p(process.env.OURS), theirs = p(require("fs").readFileSync(process.argv[1], "utf8"));
+  if (ours.length !== 3 || theirs.length !== 3 || [...ours, ...theirs].some(Number.isNaN)) process.exit(0);
+  for (let i = 0; i < 3; i++) if (ours[i] !== theirs[i]) process.exit(ours[i] > theirs[i] ? 0 : 1);
+' "$dir/app-version"; then
+  NEWER="$(cat "$dir/app-version")" node -e '
+    let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
+      let id = null; try { id = JSON.parse(s).environmentId; } catch {}
+      console.log(JSON.stringify({ environmentId: id, skipped: process.env.NEWER.trim() }));
+    });
+  ' < <(curl -sf -m 5 http://127.0.0.1:3773/.well-known/t3/environment || true)
+  exit 0
+fi
 
 # T3 server pinned to the desktop app's version. It is restarted only when something it runs
 # on changed: a restart drops every T3 Code connection.
@@ -184,6 +203,8 @@ install_if_changed() { # src dest mode: prints 1 when it changed dest
 restart_watchdog="$(install_if_changed "$here/watchdog.mjs" "$dir/watchdog.mjs" 600)"
 # The GitHub inbox, which the watchdog runs; t3agent37 also runs it as a command.
 [ "$(install_if_changed "$here/issues.mjs" "$dir/issues.mjs" 600)" = 0 ] || restart_watchdog=1
+# The start URL, which the inbox serves; t3agent37 also runs it as a command.
+[ "$(install_if_changed "$here/start.mjs" "$dir/start.mjs" 600)" = 0 ] || restart_watchdog=1
 
 cat >"$dir/boot.sh.new" <<'BOOT'
 #!/bin/bash
@@ -305,6 +326,9 @@ if [ -z "$watchdog_token" ]; then
   [ "$(write_config "$watchdog_token")" = 0 ] || restart_watchdog=1
 fi
 [ "$restart_watchdog" = 0 ] || restart watchdog
+
+# Which t3agent37 put these scripts here (see the top).
+[ -z "$app_version" ] || printf '%s' "$app_version" >"$dir/app-version"
 
 upstream_token=""
 if [ "$mint_upstream" = 1 ]; then

@@ -111,6 +111,8 @@ pub struct Panel {
     opening_port: Option<u16>,
     /// The previews section's "port" field, while it's open.
     port_input: Option<(Entity<InputState>, Subscription)>,
+    /// The field for a limited GitHub token, open for one machine (its id). Masked.
+    github_token_input: Option<(String, Entity<InputState>, Subscription)>,
     picker: Option<Picker>,
 
     new_form: Option<NewForm>,
@@ -214,6 +216,7 @@ impl Panel {
             issues_form: None,
             opening_port: None,
             port_input: None,
+            github_token_input: None,
             picker: None,
             new_form: None,
             projects: Load::Loading,
@@ -346,6 +349,7 @@ impl Panel {
         self.issues_form = None;
         self.opening_port = None;
         self.port_input = None;
+        self.github_token_input = None;
         self.picker = None;
         self.new_form = None;
         self.details = None;
@@ -391,6 +395,9 @@ impl Panel {
             self.stay_awake_open = false;
         } else if self.port_input.is_some() {
             self.port_input = None;
+            self.focus.focus(window, cx);
+        } else if self.github_token_input.is_some() {
+            self.github_token_input = None;
             self.focus.focus(window, cx);
         } else if self.issues_form.is_some() {
             self.issues_form = None;
@@ -509,6 +516,21 @@ impl Panel {
                             "New wake link copied. The old one no longer works.".to_string()
                         } else {
                             format!("Wake link copied. Open it on your phone to wake {name}.")
+                        };
+                        this.toast(text, false, cx);
+                    }
+                    (Ok(who), Cmd::GithubToken(_)) => {
+                        let who = who.unwrap_or_default();
+                        this.toast(format!("GitHub on {name} is now {who}"), false, cx)
+                    }
+                    (Ok(url), Cmd::Start { on, replace }) => {
+                        if let Some(url) = url {
+                            cx.write_to_clipboard(ClipboardItem::new_string(url));
+                        }
+                        let text = match (on, replace) {
+                            (false, _) => format!("{name}'s start URL is off. The old URL no longer works."),
+                            (true, true) => "New start URL copied. The old one no longer works.".to_string(),
+                            (true, false) => format!("Start URL copied. Give it to Grok or a script to start threads on {name}."),
                         };
                         this.toast(text, false, cx);
                     }

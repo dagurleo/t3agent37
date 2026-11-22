@@ -33,8 +33,8 @@ cargo run --bin t3agent37-dev       # the backend alone, driven from stdin (see 
 - **Environment:** `T3AGENT37_DATA_DIR` points at another data folder. `T3AGENT37_KEEP_PANEL_OPEN=1` keeps the panel up when you click elsewhere (for recordings). `T3A_DEBUG=1` logs where the panel was placed. `RUST_LOG` sets log levels.
 - **Outside a bundle** (`cargo run`), notifications go through `osascript` (shown as Script Editor's) and Start at login refuses: both need the bundle.
 - **App data:** `~/Library/Application Support/dev.t3agent37.app/`. It holds `agent37-key`, `state.json`, `t3-token` (the app's read-only session on the desktop T3 server) and `machines/` (captures per machine).
-- **On a VM:** everything lives in `/root/.t3agent37/`, including `boot.sh`, the watchdog, `t3.pid` and the machine's name.
-- **Ports on the VM:** T3 `3773`, watchdog `3774`, heartbeat `3775` (public, answers 204), wake link `3776` (public, static page), GitHub inbox `3777` (public once a repo's issues are on; acts only on signed deliveries).
+- **On a VM:** everything lives in `/root/.t3agent37/`, including `boot.sh`, the watchdog, `t3.pid`, the machine's name and `app-version`, the version of the t3agent37 that last provisioned it (an older one leaves its scripts alone, for when several computers share the machine).
+- **Ports on the VM:** T3 `3773`, watchdog `3774`, heartbeat `3775` (public, answers 204), wake link `3776` (public, static page), inbox `3777` (public while a repo's issues, a webhook task or the start URL needs it; acts only on signed GitHub deliveries, T3 webhook paths, which T3 checks, and `/start` with the start URL's token in its path or an `Authorization: Bearer` header).
 - **Ports on this computer:** MCP server at `http://127.0.0.1:47370/mcp`, machine proxies from `47371` up.
 
 ## Releasing
@@ -77,6 +77,9 @@ apps/desktop/                 the app: one Rust package (library = the backend, 
       provision.rs/.sh        what runs on the VM and how it starts on every boot
       watchdog.mjs            on the VM: idle detection, drain, heartbeat, wake-link page
       issues.rs, issues.mjs   GitHub issues as threads: the webhook, and the inbox on the VM (in the watchdog)
+      hooks.rs                T3's webhook tasks, at addresses that wake the machine
+      start.rs, start.mjs     the start URL: threads in its projects from anywhere, over HTTPS (served by the inbox)
+      shared.rs               a machine used from several computers: adding one made elsewhere, its settings read from it
       preview.rs              a machine's ports at localhost here, through T3's preview tunnel
       setup-project.sh        on the VM: a newly added project's setup (its T3 scripts, or its lockfile)
       connect.rs              T3 Connect turn-on, restart, wake link
@@ -171,6 +174,14 @@ These were checked on `agent37-ubuntu` VMs in November 2026. Several contradict 
 - Cloudflare Workers Builds reports as a check run (app `cloudflare-workers-and-pages`, "Workers Builds: <name>"), so `check_suite.completed` and `commits/{sha}/check-runs` cover it. Its log is only on Cloudflare's dashboard; the agent found the cause from the diff.
 - Bot comments that edit themselves (Cloudflare's build status) send `issue_comment.edited` for each change.
 
+**GitHub tokens** (November 2026)
+- A fine-grained token's `/user/repos` lists the account's repositories, whatever the token reaches: one made for the account with all its repositories listed other owners' too, and couldn't push to any of those. GitHub has no list of a token's repositories. Asking a repository's git push service (`https://github.com/<repo>.git/info/refs?service=git-receive-pack`, the token as the password) answers 200 only where the token can push, and changes nothing: on skiff, gh's own sign-in got 200 for all 229 repositories its account lists, in 11 s with 16 at a time.
+- A fine-grained token covers one owner (the account or one organization), picked as "Resource owner" at the top of GitHub's page, which starts as the account. A deleted token makes gh answer `Bad credentials (HTTP 401)`.
+
+**Listing and sharing**
+- `GET /v1/instances` lists the workspace's instances with `name` (`t3agent37 · <name>` for t3agent37's), `status`, `resources`, `public_ports` and `created` (unix seconds).
+- A sleep asked while another start or sleep of the same instance runs is answered `try_again` ("Another operation on this instance is still running"); the client retries with backoff. Two apps sleeping one machine hit this, and both ended with it asleep.
+
 **Resize and costs**
 - Resize works only on a running VM, which then boots fresh onto its new shape.
 - `GET /v1/usage` reports spend by instance and UTC day, settled hourly. `GET /v1/billing` gives the wallet.
@@ -186,6 +197,9 @@ These were checked on `agent37-ubuntu` VMs in November 2026. Several contradict 
 - **Server settings:** `server.getSettings` and `server.updateSettings {patch}` take the proxy's token. A patch merges record fields by key (`{projectScriptOverrides: {}}` changes nothing), and `null` removes a key. `requireConnectDeviceApproval` is the "Require approval for new T3 Connect devices" switch. T3 Connect's `preferences` hold only `publishAgentActivity` (phone push and Live Activities) and `holdWebhooksWhileOffline`.
 - **Project scripts live in two places:** the project's own (the shell's `scripts`) and the server's settings, where T3 Code's script editor saves them (`projectSettingsOverrides[projectId].defaultProjectScripts`; the older `projectScriptOverrides[projectId]` key is still accepted and translated, and `getSettings` derives it back). `orchestration.dispatchCommand` takes no `project.*` command from a client, so `copy_scripts` writes the settings, and reads them here first (`T3Desktop::project_scripts`; t3agent37's read-only session may).
 - **Which address a machine's T3 issues link tokens for:** its OAuth `resource` is the origin of the request as it arrives, so through Agent37's edge it was the public hostname until T3 0.1.12 and is now the VM's internal address (`https://10.x.x.x:3773/mcp`; `x-forwarded-host` doesn't change it). A link asking for any other address fails with `PeerLinkError: This server only issues tokens for …`. T3 checks `resource` only at the approval and the token request, a missing one passes both, and the session it issues isn't bound to an address (`/mcp` checks only the session). So `proxy/link.rs` drops `resource` from both steps, which also survives the VM's address changing.
+- **`t3 thread show <id> --json`** (`--messages N` for the latest N) answers `{thread, messages: [{role, runId, text}]}`; `thread` has `status`, `activeRunId`, `pendingRequestCount` and `link`, T3's own address for the thread (`https://app.t3.codes/threads/<environment>/<thread>`). `start.mjs` doesn't count a thread as done while its latest message is the user's, in case a follow-up's run hasn't started yet. `t3 thread start --worktree <ref>` without `--branch` names the branch itself (`t3/<slug>`), and `--generate-title` titles the thread from the message. Each `t3` command takes about 3 s on a large machine (Node starting).
+- **Projects live in T3's database too:** `projection_projects` in `~/.t3/userdata/statev2.sqlite` has `project_id`, `title`, `workspace_root`, `default_model_selection_json` (null when the project has no default model), `archived_at` and `deleted_at`.
+- **A webhook task's prompt can quote the request:** `{{body.path}}`, `{{headers.name}}`, `{{query.name}}`, `{{body}}` and `{{request}}`. T3 puts each value in `<webhook-data-…>` tags and adds a line telling the agent to treat it as untrusted data; on skiff, Claude Opus 5.5 still did what a task's own prompt said to do with it.
 - **`t3 thread start <project> <message>`** works on a machine over exec (`--provider claudeAgent --model ...` when the project has no default model; `--wait` prints the reply). Handy for tests.
 - **Models come from the server config:** `providers[].models` has each model's `slug`, `name`, `aliases`, `isLegacy` and `capabilities.optionDescriptors`. Reasoning is a `select` (Claude's has id `effort`: low, medium, high, xhigh, max, and `ultrathink`, which is in `promptInjectedValues`, i.e. goes into the prompt). `t3 thread start --option effort=low` sets it; the thread's `modelSelection` then holds `options: [{id: "effort", value: "low"}]`. A provider that isn't signed in lists no models.
 - **`providerStatusDeltas`** are made per subscription, against what that subscription was last sent (`withProviderStatusDeltas`); each lists every provider whole, minus `models`, `slashCommands` and `skills` when unchanged, and T3 Code drops a provider whose lists it can't fill. Once (November 2026), the proxy's recorded config held Claude with no models for about a minute after T3 re-checked its providers, and Codex's sign-in state went missing, while T3 itself listed all 14. A `server.refreshProviders` from another client, whose full `providerStatuses` goes to every subscriber, set it right. The cause wasn't found; `MachineRuntime::issue_models` keeps the last full list meanwhile.

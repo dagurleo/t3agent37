@@ -9,7 +9,9 @@ mod link;
 pub mod preview;
 pub mod projects;
 pub mod provision;
+pub mod shared;
 pub mod signin;
+pub mod start;
 mod work;
 
 use crate::agent37::{Agent37, EdgeClient, Instance, Resources};
@@ -696,6 +698,12 @@ impl MachineRuntime {
             false,
         )
         .await?;
+        if let Some(newer) = provisioned.skipped {
+            // Recorded as done, so it isn't tried on every wake; a newer app here tries again.
+            tracing::info!("{} has scripts from t3agent37 {newer}, newer than this one: left as they are", self.id());
+            self.update_record(|m| m.provision_revision = revision);
+            return Ok(());
+        }
         let version = provisioned.t3_version.unwrap_or(target);
         self.update_record(|m| m.provision_revision = revision);
         self.cache.lock().unwrap().bump_epoch();
@@ -1121,7 +1129,10 @@ impl MachineRuntime {
                             this.refresh_projects().await;
                             this.refresh_connect().await;
                             this.refresh_github().await;
+                            // Before the hooks: they keep the inbox URL only for what's on.
+                            this.refresh_settings().await;
                             this.refresh_hooks().await;
+                            this.refresh_start().await;
                         }
                     });
                 }

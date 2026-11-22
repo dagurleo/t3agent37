@@ -368,10 +368,14 @@ mod tests {
         assert!(start.with(&[], None, Some("opus"), None).is_err());
     }
 
-    /// The inbox's rules for feedback (`issues.test.mjs`), when Node is here.
+    /// The inbox's rules for feedback and the start URL's (`issues.test.mjs`, `start.test.mjs`),
+    /// when Node is here.
     #[test]
     fn inbox_rules() {
-        let run = std::process::Command::new("node").args(["--test", "src/machine/issues.test.mjs"]).current_dir(env!("CARGO_MANIFEST_DIR")).output();
+        let run = std::process::Command::new("node")
+            .args(["--test", "src/machine/issues.test.mjs", "src/machine/start.test.mjs"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output();
         match run {
             Ok(out) => assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)),
             Err(e) => eprintln!("node isn't here ({e}): the inbox's tests didn't run"),

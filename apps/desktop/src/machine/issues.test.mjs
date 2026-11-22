@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { asksAgent, reviewCounts, ciVerdict, roundsToday, feedbackPrompt, signedWith, MARK, MAX_ROUNDS_PER_DAY } from "./issues.mjs";
+import { asksAgent, reviewCounts, ciVerdict, actionsAsRuns, roundsToday, feedbackPrompt, signedWith, MARK, MAX_ROUNDS_PER_DAY } from "./issues.mjs";
 import { createHmac } from "node:crypto";
 
 test("a comment asks for the agent with a line starting /agent", () => {
@@ -34,6 +34,18 @@ test("CI is judged once every check run finished", () => {
   const failed = ciVerdict([run("completed", "success", "lint"), run("completed", "failure", "test"), run("completed", "timed_out", "e2e")]);
   assert.equal(failed.state, "failed");
   assert.deepEqual(failed.failed.map((r) => r.name), ["test", "e2e"]);
+});
+
+test("with a fine-grained token, CI comes from GitHub Actions' runs", () => {
+  const runs = actionsAsRuns([
+    { name: "CI", status: "completed", conclusion: "failure", html_url: "https://github.com/o/r/actions/runs/1", head_sha: "abc" },
+    { name: "Lint", status: "completed", conclusion: "success", html_url: "u2" },
+  ]);
+  const verdict = ciVerdict(runs);
+  assert.equal(verdict.state, "failed");
+  assert.deepEqual(verdict.failed.map((r) => [r.name, r.html_url]), [["CI", "https://github.com/o/r/actions/runs/1"]]);
+  assert.equal(ciVerdict(actionsAsRuns([{ name: "CI", status: "in_progress", conclusion: null }])).state, "pending");
+  assert.deepEqual(actionsAsRuns(undefined), []);
 });
 
 test("a pull request gets so many rounds a day", () => {

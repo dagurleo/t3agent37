@@ -8,7 +8,7 @@ use crate::store::{Settings, Spend, State, Store};
 use crate::t3desktop::T3Desktop;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -149,6 +149,20 @@ pub struct App {
     retired_ports: Mutex<Vec<u16>>,
     /// Sandboxes of creates the app didn't live to finish, until deleted.
     leftover_sandboxes: Mutex<Vec<String>>,
+    /// t3agent37's machines on the account that this computer doesn't have, as last listed.
+    elsewhere: Mutex<Vec<ElsewhereMachine>>,
+}
+
+/// A machine t3agent37 made on this Agent37 account that this computer doesn't have: one made on
+/// another computer, or here before this app's data was lost. It can be added here.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ElsewhereMachine {
+    pub id: String,
+    pub name: String,
+    /// None for a shape none of the sizes has.
+    pub size: Option<String>,
+    pub asleep: bool,
 }
 
 impl App {
@@ -184,6 +198,7 @@ impl App {
             spend: Mutex::new(state.spend),
             retired_ports: Mutex::new(state.retired_ports),
             leftover_sandboxes: Mutex::new(leftover),
+            elsewhere: Mutex::new(Vec::new()),
         });
         for record in state.machines {
             app.spawn(app.runtime(record));
@@ -390,6 +405,100 @@ impl App {
         Ok(machine)
     }
 
+    /// The account's t3agent37 machines this computer doesn't have, as last listed.
+    pub fn elsewhere(&self) -> Vec<ElsewhereMachine> {
+        self.elsewhere.lock().unwrap().clone()
+    }
+
+    /// Lists the account's t3agent37 machines that this computer doesn't have, from Agent37
+    /// (which never wakes them). Other VMs on the account aren't t3agent37's and stay out.
+    pub async fn refresh_elsewhere(&self) {
+        let instances = match self.shared.a37.list().await {
+            Ok(list) => list,
+            Err(e) => return tracing::debug!("listing the account's machines: {e:#}"),
+        };
+        let mut ours: HashSet<String> = self.machines().iter().map(|m| m.sandbox_id()).collect();
+        ours.extend(self.leftover_sandboxes.lock().unwrap().iter().cloned());
+        ours.extend(self.creating.lock().unwrap().iter().filter_map(|c| c.sandbox.clone()));
+        let found: Vec<ElsewhereMachine> = instances
+            .iter()
+            .filter(|i| !ours.contains(&i.id))
+            .filter_map(|i| {
+                Some(ElsewhereMachine {
+                    id: i.id.clone(),
+                    name: crate::machine::shared::machine_name(i)?,
+                    size: crate::machine::shared::size_of(i).map(str::to_owned),
+                    asleep: i.status != "running",
+                })
+            })
+            .collect();
+        let mut elsewhere = self.elsewhere.lock().unwrap();
+        if *elsewhere != found {
+            *elsewhere = found;
+            self.shared.changed();
+        }
+    }
+
+    /// Adds a machine made on another computer (`elsewhere`, by id or name) to this one, which
+    /// gets a T3 sign-in of its own there: the other computer keeps using it as before. Wakes it.
+    pub async fn add_machine_here(self: &Arc<Self>, machine: &str) -> Result<Arc<MachineRuntime>> {
+        use crate::machine::shared;
+        let found = self
+            .elsewhere()
+            .into_iter()
+            .find(|m| m.id == machine || m.name.eq_ignore_ascii_case(machine))
+            .ok_or_else(|| anyhow!("your Agent37 account has no t3agent37 machine {machine} that this computer doesn't have"))?;
+        let name = found.name.clone();
+        let port = self.reserve(&name)?;
+        self.set_creating_step(&name, "Adding from your account");
+        let result = async {
+            let a37 = &self.shared.a37;
+            let gone = || anyhow!("{name} no longer exists on Agent37");
+            if a37.get(&found.id).await?.ok_or_else(gone)?.status != "running" {
+                self.set_creating_step(&name, "Waking it");
+                a37.start(&found.id).await?;
+            }
+            self.set_creating_step(&name, "Signing this computer in");
+            let adopted = shared::adopt(a37, &found.id).await?;
+            let heartbeat = provision::heartbeat_url(a37, &found.id).await?;
+            let instance = a37.get(&found.id).await?.ok_or_else(gone)?;
+            let record = shared::record(&instance, &name, adopted, heartbeat, port);
+            let (day, _) = periods();
+            self.spend
+                .lock()
+                .unwrap()
+                .entry(record.sandbox_id.clone())
+                .or_insert_with(|| Spend { machine: record.id.clone(), day, today: 0.0, awake_secs_today: 0, month: 0.0 });
+            let machine = self.runtime(record);
+            // What it does for the other computer, shown here too.
+            match machine.read_settings().await {
+                Ok(settings) => machine.use_settings(settings).await,
+                Err(e) => tracing::warn!("reading {name}'s settings: {e:#}"),
+            }
+            if let Err(e) = machine.prime().await {
+                tracing::warn!("priming {}: {e:#}", machine.id());
+            }
+            self.spawn(machine.clone());
+            Ok::<_, anyhow::Error>(machine)
+        }
+        .await;
+        // Never a leftover to delete: the machine is the other computer's too.
+        self.creating.lock().unwrap().retain(|c| c.name != name);
+        if result.is_ok() {
+            self.elsewhere.lock().unwrap().retain(|m| m.id != found.id);
+        }
+        self.shared.persist();
+        self.shared.changed();
+        let machine = result?;
+        if std::env::var_os("T3AGENT37_NO_AUTOPAIR").is_some() {
+            return Ok(machine);
+        }
+        if let Err(e) = self.pair(&machine) {
+            self.shared.notify(format!("Couldn't open T3 Code for {name}"), format!("{e:#}; use Add to T3 Code"));
+        }
+        Ok(machine)
+    }
+
     /// This computer's T3 projects that can go to a machine: those with a git remote.
     pub async fn local_projects(&self) -> Result<Vec<crate::projects::Project>> {
         self.shared.t3.projects().await
@@ -551,6 +660,7 @@ impl App {
             *self.balance.lock().unwrap() = Some(b.balance_usd);
             self.check_wallet(b.balance_usd);
         }
+        self.refresh_elsewhere().await;
         self.shared.persist();
         self.shared.changed();
     }
@@ -632,6 +742,23 @@ pub struct MachineDetails {
     pub project_costs: Vec<ProjectCost>,
     /// T3's webhook tasks on it, as last read there, with addresses that wake it.
     pub webhooks: Vec<Webhook>,
+    /// Its start URL, while it's on.
+    pub start: Option<StartInfo>,
+}
+
+/// A machine's start URL (`machine/start.rs`), which starts threads in its projects from anywhere.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StartInfo {
+    /// None until the machine has an inbox URL again, which it gets the next time it's up.
+    pub url: Option<String>,
+    /// The same without its token (`<inbox URL>/start`), which then goes in an
+    /// `Authorization: Bearer` header; None as `url` is.
+    pub address: Option<String>,
+    /// The token alone, for that header.
+    pub token: String,
+    /// The model for a project with no default of its own: "Opus 5.5, high".
+    pub default_model: Option<String>,
 }
 
 /// One of T3's webhook tasks on a machine.
@@ -704,6 +831,15 @@ pub struct AgentLogin {
     /// GitHub's account, `@login`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login: Option<String>,
+    /// GitHub: the repositories its token can push to, when it's a fine-grained one, and that
+    /// in words ("only skildingur, tantalum", "all 85 of octocat's repos").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repos: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reach: Option<String>,
+    /// GitHub: when that token expires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires: Option<String>,
 }
 
 impl App {
@@ -730,13 +866,16 @@ impl App {
                         _ => return None,
                     };
                     let account = if signed_in { crate::machine::signin::account(p) } else { Default::default() };
-                    Some(AgentLogin { name, signed_in, account, login: None })
+                    Some(AgentLogin { name, signed_in, account, login: None, repos: None, reach: None, expires: None })
                 })
                 .chain(record.github_checked.then(|| AgentLogin {
                     name: GITHUB.into(),
                     signed_in: record.github_login.is_some(),
                     account: Default::default(),
                     login: record.github_login.clone(),
+                    repos: record.github_reach.as_ref().map(|r| r.repos.clone()),
+                    reach: record.github_reach.as_ref().map(crate::store::GithubReach::describe),
+                    expires: record.github_token_expires.clone(),
                 }))
                 .collect(),
             t3_version: record.t3_version,
@@ -766,6 +905,12 @@ impl App {
                     })
                     .collect()
             },
+            start: record.start.as_ref().map(|s| StartInfo {
+                url: machine.start_url(),
+                address: machine.start_parts().map(|(address, _)| address),
+                token: s.token.clone(),
+                default_model: machine.start_agent(),
+            }),
             previews: record.previews,
         })
     }

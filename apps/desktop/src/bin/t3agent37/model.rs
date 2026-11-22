@@ -79,6 +79,24 @@ pub fn wake_link() -> Action {
 pub fn new_wake_link() -> Action {
     action("New link", "Replacing…", Cmd::WakeLink { renew: true })
 }
+/// "token expires 2027-02-20", from GitHub's `2027-02-20 12:00:00 UTC`.
+pub fn expires_line(expires: &str) -> String {
+    format!("token expires {}", expires.split_whitespace().next().unwrap_or(expires))
+}
+
+/// Signs a machine's GitHub in with a token the user pasted.
+pub fn github_token(token: String) -> Action {
+    action("Use token", "Checking the token…", Cmd::GithubToken(crate::backend::Secret(token)))
+}
+pub fn start_on() -> Action {
+    action("Turn on", "Turning on…", Cmd::Start { on: true, replace: false })
+}
+pub fn start_replace() -> Action {
+    action("Replace URL", "Replacing…", Cmd::Start { on: true, replace: true })
+}
+pub fn start_off() -> Action {
+    action("Turn off", "Turning off…", Cmd::Start { on: false, replace: false })
+}
 pub fn remove() -> Action {
     action("Remove", "Removing…", Cmd::Delete { discard: true })
 }
@@ -416,6 +434,12 @@ pub fn joiners(n: usize) -> impl Iterator<Item = &'static str> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn limited_github_lines() {
+        assert_eq!(expires_line("2027-02-20 12:00:00 UTC"), "token expires 2027-02-20");
+    }
+
     use super::*;
     use t3agent37_lib::machine::signin::UsageWindow;
 
@@ -433,7 +457,7 @@ mod tests {
             usage: vec![window("Weekly", 35.4, 3_600_000), window("Weekly · Fable", 92., 3_600_000)],
             usage_checked_at: Some(now - 60_000),
         };
-        let claude = AgentLogin { name: "Claude".into(), signed_in: true, account: account.clone(), login: None };
+        let claude = AgentLogin { name: "Claude".into(), signed_in: true, account: account.clone(), login: None, repos: None, reach: None, expires: None };
         assert_eq!(account_line(&claude).as_deref(), Some("you@example.com · Ultra"));
         assert_eq!(usage_line(&account, now).as_deref(), Some("Weekly 35% · Fable 92%"));
         assert!(usage_high(&account, now));
@@ -441,7 +465,7 @@ mod tests {
         let old = Account { usage_checked_at: Some(now - 3 * 3_600_000), usage: vec![window("Weekly", 35., 60_000), window("Weekly · Fable", 92., -1)], ..account };
         assert_eq!(usage_line(&old, now).as_deref(), Some("Weekly 35% · Fable reset · 3h ago"));
         assert!(!usage_high(&old, now));
-        let github = AgentLogin { name: "GitHub".into(), signed_in: true, account: Account::default(), login: Some("octocat".into()) };
+        let github = AgentLogin { name: "GitHub".into(), signed_in: true, account: Account::default(), login: Some("octocat".into()), repos: None, reach: None, expires: None };
         assert_eq!(account_line(&github).as_deref(), Some("@octocat"));
         assert_eq!(usage_line(&github.account, now), None);
     }

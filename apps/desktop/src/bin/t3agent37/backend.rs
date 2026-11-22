@@ -8,13 +8,14 @@ use std::time::Duration;
 
 use futures::channel::mpsc::UnboundedSender;
 use t3agent37_lib::agent37::{Agent37, KEYS_PAGE};
-pub use t3agent37_lib::app::{AgentLogin, ProjectCost, Webhook};
+pub use t3agent37_lib::app::{AgentLogin, ElsewhereMachine, ProjectCost, StartInfo, Webhook};
 use t3agent37_lib::app::{self, App, Costs, GITHUB, MachineView, Setup};
 use t3agent37_lib::machine::Event;
 use t3agent37_lib::machine::issues::{IssueSettings, ModelChoice};
 pub use t3agent37_lib::machine::preview::LocalServer;
 use t3agent37_lib::machine::provision::{SIZES, SizeInfo};
 use t3agent37_lib::machine::signin::Agent;
+pub use t3agent37_lib::machine::signin::Secret;
 use t3agent37_lib::mcp::{self, Client};
 use t3agent37_lib::projects::Project;
 pub use t3agent37_lib::store::Preview;
@@ -62,6 +63,8 @@ pub struct UiState {
     pub setup_busy: bool,
     pub account: Option<Account>,
     pub machines: Vec<MachineView>,
+    /// t3agent37 machines on the account that this computer doesn't have: from another computer.
+    pub elsewhere: Vec<ElsewhereMachine>,
     pub costs: Costs,
     pub settings: Settings,
     pub sizes: &'static [SizeInfo],
@@ -92,6 +95,8 @@ pub struct Details {
     pub project_costs: Vec<ProjectCost>,
     /// T3's webhook tasks on it, with addresses that wake it.
     pub webhooks: Vec<Webhook>,
+    /// Its start URL, while it's on.
+    pub start: Option<StartInfo>,
 }
 
 /// A command for one machine.
@@ -126,6 +131,11 @@ pub enum Cmd {
     /// GitHub issues given a label in one of its projects (by id) become threads there, with
     /// `settings` (on: the project's own, or the defaults, when `None`).
     Issues { project: String, on: bool, settings: Option<IssueSettings> },
+    /// The start URL on (resolves to it, for the clipboard) or off; `replace`: a new one.
+    Start { on: bool, replace: bool },
+    /// Signs its GitHub in with a token the user made (one limited to some repositories);
+    /// resolves to who and how many repositories, for the toast.
+    GithubToken(Secret),
 }
 
 pub type Res<T = ()> = Result<T, String>;
@@ -193,6 +203,7 @@ impl Backend {
             setup_busy: *inner.busy.lock().unwrap(),
             account: inner.account.lock().unwrap().clone(),
             machines: app.as_ref().map(|a| a.views()).unwrap_or_default(),
+            elsewhere: app.as_ref().map(|a| a.elsewhere()).unwrap_or_default(),
             costs: app.as_ref().map(|a| a.costs()).unwrap_or_default(),
             settings: app.as_ref().map(|a| a.settings()).unwrap_or_default(),
             sizes: SIZES,
@@ -211,13 +222,19 @@ impl Backend {
         async move { handle.await.map_err(|e| format!("{e}"))? }
     }
 
-    /// Resolves to the wake link for `Cmd::WakeLink` (for the clipboard), else to `None`.
+    /// Resolves to the wake link for `Cmd::WakeLink` and the start URL for `Cmd::Start` (for the
+    /// clipboard), else to `None`.
     pub fn act(&self, id: String, cmd: Cmd) -> impl Future<Output = Res<Option<String>>> + use<> {
         self.run(move |inner| act(inner, id, cmd))
     }
 
     pub fn create_machine(&self, name: String, size: String, projects: Vec<String>) -> impl Future<Output = Res> + use<> {
         self.run(move |inner| async move { inner.app()?.create_machine(&name, &size, projects).await.map(drop).map_err(err) })
+    }
+
+    /// Adds a machine made with t3agent37 on another computer to this one; resolves to its name.
+    pub fn add_machine_here(&self, id: String) -> impl Future<Output = Res<String>> + use<> {
+        self.run(move |inner| async move { inner.app()?.add_machine_here(&id).await.map(|m| m.record().name).map_err(err) })
     }
 
     /// This computer's T3 projects that can go to a machine.
@@ -248,6 +265,8 @@ impl Backend {
             issue_models = machine.issue_models();
             self.rt.spawn(async move {
                 machine.refresh_servers().await;
+                // Another computer may have changed them.
+                machine.refresh_settings().await;
                 machine.refresh_hooks().await;
             });
         }
@@ -267,6 +286,7 @@ impl Backend {
             issue_models,
             project_costs: d.project_costs,
             webhooks: d.webhooks,
+            start: d.start,
         })
     }
 
@@ -336,6 +356,8 @@ async fn act(inner: Arc<Inner>, id: String, cmd: Cmd) -> Res<Option<String>> {
     let machine = app.machine(&id).map_err(err)?;
     let done = match cmd {
         Cmd::WakeLink { renew } => return machine.wake_link(renew).await.map(Some).map_err(err),
+        Cmd::Start { on, replace } => return machine.set_start(on, replace).await.map_err(err),
+        Cmd::GithubToken(token) => return machine.sign_in_github_token(&token).await.map(Some).map_err(err),
         Cmd::Open { thread } => app.open_in_t3(&machine, thread.as_deref()),
         Cmd::Pair => app.pair(&machine),
         Cmd::Wake => machine.ensure_awake().await,

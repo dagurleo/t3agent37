@@ -248,6 +248,129 @@ impl MachineRuntime {
 /// GitHub's device sign-in lasts 15 minutes.
 const GITHUB_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
+/// A secret that never shows in logs or debug output.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(…)")
+    }
+}
+
+/// What a fine-grained token needs for what machines do: clone, push (workflow files too) and
+/// open pull requests, comment and label for GitHub issues, make their webhook, and read CI.
+/// Fine-grained tokens can't read the Checks API at all, so CI comes from Actions and statuses.
+const GITHUB_TOKEN_PERMISSIONS: &str =
+    "contents=write&pull_requests=write&issues=write&workflows=write&actions=read&statuses=read&repository_hooks=write&metadata=read";
+
+/// GitHub's page for a new fine-grained token for this machine: its name, description, 90 days
+/// and the permissions filled in. The repositories are picked there; GitHub takes no template
+/// for those.
+pub fn github_token_page(machine: &str) -> String {
+    let name: String = format!("t3agent37 {machine}").chars().take(40).collect();
+    let description = format!(
+        "For t3agent37's machine {machine}: its agents clone, push and open pull requests only in the repositories picked here."
+    );
+    format!(
+        "https://github.com/settings/personal-access-tokens/new?name={}&description={}&expires_in=90&{GITHUB_TOKEN_PERMISSIONS}",
+        urlencoding::encode(&name),
+        urlencoding::encode(&description)
+    )
+}
+
+/// A token for a machine's gh: a fine-grained personal access token (`github_pat_…`), or a
+/// classic one (`ghp_…`), which reaches every repository like gh's own sign-in.
+pub fn check_token_shape(token: &str) -> Result<String> {
+    let token = token.trim();
+    let known = token.starts_with("github_pat_") || token.starts_with("ghp_");
+    if !known || token.len() < 36 || !token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        bail!("That isn't a GitHub token. A fine-grained one starts with github_pat_");
+    }
+    Ok(token.to_owned())
+}
+
+/// What GitHub says about a token: whose it is and when it expires.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GithubToken {
+    pub login: String,
+    pub expires: Option<String>,
+}
+
+/// Asks GitHub about a token from this computer, so a bad one is caught before the machine wakes.
+pub async fn check_github_token(token: &Secret) -> Result<GithubToken> {
+    let client = reqwest::Client::builder().user_agent("t3agent37").timeout(Duration::from_secs(20)).build()?;
+    let get = |path: &str| {
+        client
+            .get(format!("https://api.github.com{path}"))
+            .bearer_auth(&token.0)
+            .header("accept", "application/vnd.github+json")
+            .header("x-github-api-version", "2022-11-28")
+    };
+    let res = get("/user").send().await.context("asking GitHub about the token")?;
+    match res.status().as_u16() {
+        200 => {}
+        401 => bail!("GitHub doesn't take that token: check that all of it was copied and that it hasn't expired"),
+        code => bail!("GitHub answered {code} about that token"),
+    }
+    let expires = res.headers().get("github-authentication-token-expiration").and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let login = res.json::<Value>().await?["login"].as_str().ok_or_else(|| anyhow!("GitHub didn't say whose token it is"))?.to_owned();
+    Ok(GithubToken { login, expires })
+}
+
+/// Who the machine's gh is, and for a fine-grained token a short hash of it (so a new one is
+/// tested again): `login`, then `limited <hash>` or `full`.
+const GITHUB_STATE: &str = r#"login="$(gh api user --jq .login 2>/dev/null)" || exit 1
+echo "$login"
+t="$(gh auth token 2>/dev/null)"
+case "$t" in
+  github_pat_*) echo "limited $(printf '%s' "$t" | sha256sum | cut -c1-16)" ;;
+  *) echo full ;;
+esac"#;
+
+/// What `GITHUB_STATE` printed: the login, and the token's hash when it's a fine-grained one.
+fn parse_github_state(out: &str) -> Option<(String, Option<String>)> {
+    let mut lines = out.lines().map(str::trim).filter(|l| !l.is_empty());
+    let login = lines.next()?.to_owned();
+    let hash = lines.next().and_then(|l| l.strip_prefix("limited ")).map(str::to_owned);
+    Some((login, hash))
+}
+
+/// Tests which repositories gh's token can push to: GitHub's list of the account's
+/// repositories (whatever the token reaches), each asked for git's push service, which answers
+/// 200 only to a token that can push there. Nothing is changed. The token goes to curl in a file
+/// only root can read, never on a command line. Prints `owner <name> <count>` for every owner in
+/// the list, then `push <repo>` for each it can push to.
+const GITHUB_REACH: &str = r#"d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
+printf 'user = "x-access-token:%s"
+' "$(gh auth token)" > "$d/auth"; chmod 600 "$d/auth"
+gh api --paginate '/user/repos?per_page=100&affiliation=owner,collaborator,organization_member' --jq '.[].full_name' > "$d/all" || exit 1
+cut -d/ -f1 "$d/all" | sort | uniq -c | while read -r n o; do echo "owner $o $n"; done
+xargs -P 16 -I{} sh -c 'c=$(curl -s -m 20 -K "$1" -o /dev/null -w "%{http_code}" "https://github.com/$2.git/info/refs?service=git-receive-pack"); [ "$c" = 200 ] && echo "push $2"' _ "$d/auth" {} < "$d/all"
+true"#;
+
+/// What `GITHUB_REACH` printed, as a reach for the token with hash `token`.
+fn parse_reach(out: &str, token: &str) -> crate::store::GithubReach {
+    let mut owners = std::collections::BTreeMap::new();
+    let mut repos = Vec::new();
+    for line in out.lines() {
+        let mut words = line.split_whitespace();
+        match (words.next(), words.next(), words.next()) {
+            (Some("owner"), Some(owner), Some(n)) => {
+                owners.insert(owner.to_owned(), n.parse::<usize>().unwrap_or(0));
+            }
+            (Some("push"), Some(repo), None) => repos.push(repo.to_owned()),
+            _ => {}
+        }
+    }
+    repos.sort_by_key(|r| r.to_lowercase());
+    let owner_of = |r: &String| r.split('/').next().unwrap_or_default().to_owned();
+    let only = repos.first().map(owner_of).filter(|o| repos.iter().all(|r| owner_of(r) == *o));
+    // Every repository of one owner, and more than a handful: "All repositories".
+    let all_of = only.filter(|o| repos.len() > 3 && owners.get(o) == Some(&repos.len()));
+    crate::store::GithubReach { token: token.to_owned(), repos, all_of }
+}
+
 impl MachineRuntime {
     /// Signs the machine's gh, which its git uses for GitHub, in to the user's GitHub account with
     /// GitHub's device flow: the page opens here, the code is on the clipboard and in a
@@ -279,15 +402,7 @@ impl MachineRuntime {
         let _ = a37.exec(&id, &format!("rm -rf '{dir}'; pkill -f 'gh auth login' || true"), 30).await;
         result?;
         self.refresh_github().await;
-        let after = self.record().github_login;
-        if let Some(old) = before.filter(|old| after.is_some() && after.as_ref() != Some(old)) {
-            let out = a37
-                .exec(&id, &format!("gh auth logout --hostname github.com --user {}", shell_quote(&old)), 30)
-                .await;
-            if !matches!(out, Ok(ref r) if r.exit_code == Some(0)) {
-                tracing::warn!("signing {old} out of GitHub on {}: {out:?}", self.id());
-            }
-        }
+        self.sign_out_github(before).await;
         Ok(())
     }
 
@@ -323,24 +438,85 @@ impl MachineRuntime {
         }
     }
 
-    /// Who the machine's gh is signed in as, kept on its record so the details view can say it
-    /// without waking the machine. Only for a running machine: an exec would wake it.
+    /// Signs the machine's gh in with a token the user made on GitHub: a fine-grained one limited
+    /// to some repositories, so the machine's agents reach only those. Checked with GitHub from
+    /// here first, then put in gh on the machine (git uses it from there); the account it had
+    /// before is signed out. Wakes the machine.
+    /// Resolves to who it is now and what it reaches, for a toast.
+    pub async fn sign_in_github_token(&self, token: &Secret) -> Result<String> {
+        let token = Secret(check_token_shape(&token.0)?);
+        let info = check_github_token(&token).await?;
+        let _running = SignInRunning::start(self, crate::app::GITHUB);
+        self.ensure_awake().await?;
+        let (id, a37) = (self.sandbox_id(), &self.shared.a37);
+        let before = self.record().github_login;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&token.0);
+        let login = format!("echo {} | base64 -d | gh auth login --hostname github.com --git-protocol https --with-token", shell_quote(&b64));
+        self.kept_awake(a37.exec_ok(&id, &login, 60)).await.context("signing gh in on the machine")?;
+        self.kept_awake(self.refresh_github()).await;
+        self.update_record(|r| r.github_token_expires = info.expires.clone());
+        self.sign_out_github(before).await;
+        self.shared.changed();
+        let reach = self.record().github_reach.map_or_else(|| "every repo it can reach".to_owned(), |r| r.describe());
+        Ok(format!("@{}, {reach}", info.login))
+    }
+
+    /// Which repositories a fine-grained token on the machine can push to (`GITHUB_REACH`).
+    /// A failed test leaves the hash empty, so it's tried again.
+    async fn test_github_reach(&self, hash: &str) -> crate::store::GithubReach {
+        match self.shared.a37.exec(&self.sandbox_id(), GITHUB_REACH, 180).await {
+            Ok(r) if r.exit_code == Some(0) => parse_reach(&r.stdout, hash),
+            other => {
+                tracing::warn!("testing {}'s GitHub token: {other:?}", self.id());
+                crate::store::GithubReach::default()
+            }
+        }
+    }
+
+    /// After a sign-in as another account: the old one is signed out of gh, which kept it.
+    async fn sign_out_github(&self, before: Option<String>) {
+        let after = self.record().github_login;
+        let Some(old) = before.filter(|old| after.is_some() && after.as_ref() != Some(old)) else { return };
+        let out = self.shared.a37.exec(&self.sandbox_id(), &format!("gh auth logout --hostname github.com --user {}", shell_quote(&old)), 30).await;
+        if !matches!(out, Ok(ref r) if r.exit_code == Some(0)) {
+            tracing::warn!("signing {old} out of GitHub on {}: {out:?}", self.id());
+        }
+    }
+
+    /// Who the machine's gh is signed in as, and the repositories a limited token reaches, kept
+    /// on its record so the details view can say them without waking the machine. Only for a
+    /// running machine: an exec would wake it.
     pub(super) async fn refresh_github(&self) {
         if !self.up_for_background() {
             return;
         }
-        let out = self.shared.a37.exec(&self.sandbox_id(), "gh api user --jq .login 2>/dev/null", 30).await;
-        let login = match out {
-            Ok(r) if r.exit_code == Some(0) => Some(r.stdout.trim().to_owned()).filter(|l| !l.is_empty()),
-            Ok(_) => None,
+        let out = self.shared.a37.exec(&self.sandbox_id(), GITHUB_STATE, 30).await;
+        let (login, hash) = match out {
+            Ok(r) if r.exit_code == Some(0) => parse_github_state(&r.stdout).map_or((None, None), |(l, hash)| (Some(l), hash)),
+            Ok(_) => (None, None),
             Err(e) => return tracing::warn!("reading {}'s GitHub login: {e:#}", self.id()),
         };
         let record = self.record();
-        if !record.github_checked || record.github_login != login {
+        // A token is tested once: again only when it changes, or the last test failed.
+        let reach = match hash {
+            None => None,
+            Some(hash) => match record.github_reach.clone() {
+                Some(known) if known.token == hash => Some(known),
+                _ => Some(self.test_github_reach(&hash).await),
+            },
+        };
+        if !record.github_checked || record.github_login != login || record.github_reach != reach {
+            let limited = reach.is_some();
             self.update_record(|m| {
                 m.github_checked = true;
                 m.github_login = login;
+                m.github_reach = reach;
+                // gh's own sign-in has no expiry to show.
+                if !limited {
+                    m.github_token_expires = None;
+                }
             });
+            self.shared.changed();
         }
     }
 }
@@ -462,8 +638,41 @@ fn callback_port(url: &str) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{account, callback_port, device_code, from_curl};
+    use super::{account, callback_port, check_token_shape, device_code, from_curl, github_token_page, parse_github_state, parse_reach, Secret};
     use serde_json::json;
+
+    #[test]
+    fn limited_github_tokens() {
+        let page = github_token_page("skiff");
+        assert!(page.starts_with("https://github.com/settings/personal-access-tokens/new?name=t3agent37%20skiff&description="));
+        assert!(page.contains("&expires_in=90&contents=write&") && page.contains("&repository_hooks=write&") && !page.contains("checks="));
+        // GitHub's limit for a name is 40 characters.
+        assert!(github_token_page(&"a".repeat(32)).contains(&format!("name=t3agent37%20{}&", "a".repeat(30))));
+        let fine = format!("github_pat_{}", "A1_b".repeat(20));
+        assert_eq!(check_token_shape(&format!("  {fine}\n")).unwrap(), fine);
+        assert!(check_token_shape(&format!("ghp_{}", "x".repeat(36))).is_ok());
+        assert!(check_token_shape("github_pat_short").is_err());
+        assert!(check_token_shape(&format!("gho_{}", "x".repeat(36))).is_err());
+        assert!(check_token_shape(&format!("github_pat_{}; rm -rf /", "x".repeat(40))).is_err());
+        assert_eq!(format!("{:?}", Secret(fine)), "Secret(…)");
+        assert_eq!(parse_github_state("me\nlimited 0123456789abcdef\n"), Some(("me".into(), Some("0123456789abcdef".into()))));
+        assert_eq!(parse_github_state("me\nfull\n"), Some(("me".into(), None)));
+        assert_eq!(parse_github_state(""), None);
+        // One owner's repos picked: listed by name.
+        let picked = parse_reach("owner acme 12\nowner me 85\npush acme/web\npush acme/api\n", "h");
+        assert_eq!((picked.repos.clone(), picked.all_of.clone()), (vec!["acme/api".to_owned(), "acme/web".to_owned()], None));
+        assert_eq!(picked.describe(), "only api, web");
+        // Every one of an owner's repos: "All repositories".
+        let mut all = String::from("owner me 5\nowner acme 2\n");
+        for r in ["a", "b", "c", "d", "e"] {
+            all.push_str(&format!("push me/{r}\n"));
+        }
+        let all = parse_reach(&all, "h");
+        assert_eq!(all.all_of.as_deref(), Some("me"));
+        assert_eq!(all.describe(), "all 5 of me's repos");
+        assert_eq!(parse_reach("owner me 3\n", "h").describe(), "can't push to any repo");
+        assert_eq!(crate::store::GithubReach::default().describe(), "limited to some repos (not checked yet)");
+    }
 
     #[test]
     fn reads_the_account_from_t3s_provider_status() {

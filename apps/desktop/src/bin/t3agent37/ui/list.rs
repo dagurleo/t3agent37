@@ -6,7 +6,7 @@ use std::time::Instant;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use t3agent37_lib::app::{MachineState as State, MachineView};
+use t3agent37_lib::app::{ElsewhereMachine, MachineState as State, MachineView};
 
 use super::kit::{self, Btn, Icon, Size};
 use super::{Panel, View};
@@ -28,6 +28,14 @@ macro_rules! inside_row {
 impl Panel {
     pub(super) fn render_list(&mut self, tk: &Tokens, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let tk = *tk;
+        // One being added shows as a machine already.
+        let elsewhere: Vec<ElsewhereMachine> = self
+            .state
+            .elsewhere
+            .iter()
+            .filter(|e| !self.state.machines.iter().any(|m| m.name.eq_ignore_ascii_case(&e.name)))
+            .cloned()
+            .collect();
         if self.state.machines.is_empty() {
             return div()
                 .flex()
@@ -48,6 +56,7 @@ impl Panel {
                         .child("New machine")
                         .on_click(cx.listener(|this, _, window, cx| this.go(View::New, window, cx))),
                 )
+                .when(!elsewhere.is_empty(), |d| d.child(div().mx(px(-24.)).mt(px(12.)).child(self.render_elsewhere(&elsewhere, &tk, cx))))
                 .into_any_element();
         }
 
@@ -76,8 +85,75 @@ impl Panel {
             .flex_1()
             .min_h_0()
             .child(head)
-            .child(div().flex_1().min_h_0().children(rows).overflow_y_scrollbar().id("list"))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .children(rows)
+                    .when(!elsewhere.is_empty(), |d| d.child(self.render_elsewhere(&elsewhere, &tk, cx)))
+                    .overflow_y_scrollbar()
+                    .id("list"),
+            )
             .into_any_element()
+    }
+
+    /// Machines made with t3agent37 on another computer, on the same Agent37 account.
+    fn render_elsewhere(&mut self, list: &[ElsewhereMachine], tk: &Tokens, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let rows = list.iter().enumerate().map(|(i, e)| {
+            let about: Vec<&str> = [e.size.as_deref(), Some(if e.asleep { "asleep" } else { "awake" })].into_iter().flatten().collect();
+            let (id, name) = (e.id.clone(), e.name.clone());
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(16.))
+                .py(px(8.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().min_w_0().truncate().font_weight(FontWeight::MEDIUM).child(e.name.clone()))
+                        .child(kit::caption(tk).flex_none().child(about.join(" · "))),
+                )
+                .child(
+                    kit::button(("add-here", i), Btn::Outline, Size::Sm, false, tk)
+                        .child("Add here")
+                        .on_click(cx.listener(move |this, _, _, cx| this.add_machine_here(id.clone(), name.clone(), cx))),
+                )
+        });
+        div()
+            .flex()
+            .flex_col()
+            .border_t_1()
+            .border_color(tk.line)
+            .pt(px(4.))
+            .child(kit::caption(tk).flex().items_center().px(px(16.)).pt(px(8.)).pb(px(2.)).child("on your agent37 account").child(kit::count(list.len(), tk)))
+            .children(rows)
+            .child(
+                div()
+                    .px(px(16.))
+                    .pb(px(10.))
+                    .text_size(px(12.))
+                    .line_height(relative(1.4))
+                    .text_color(tk.muted)
+                    .child("Made with t3agent37 on another computer. Adding one here wakes it once and signs this computer in to it; the other computer keeps it, and both show the same machine."),
+            )
+    }
+
+    /// Not a tracked action: the machine shows as one being added meanwhile.
+    fn add_machine_here(&mut self, id: String, name: String, cx: &mut Context<Self>) {
+        let job = self.backend.add_machine_here(id);
+        cx.spawn(async move |this, cx| {
+            let result = job.await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(name) => this.toast(format!("{name} is on this computer too. Switch to T3 Code to accept it."), false, cx),
+                Err(e) => this.toast(format!("Couldn't add {name}: {e}"), true, cx),
+            });
+        })
+        .detach();
     }
 
     fn render_row(&mut self, m: &MachineView, tk: &Tokens, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {

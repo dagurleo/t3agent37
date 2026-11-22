@@ -33,13 +33,16 @@ impl Panel {
         if !gone {
             body.push(self.power(m, busy, &tk, cx).into_any_element());
         }
-        body.push(self.agents(m, d.as_ref(), pending, &tk, cx).into_any_element());
+        body.push(self.agents(m, d.as_ref(), pending, &tk, window, cx).into_any_element());
         body.push(self.connect(m, d.as_ref(), pending, &tk, cx).into_any_element());
         if !gone {
             body.push(self.previews(m, d.as_ref(), pending, &tk, window, cx).into_any_element());
         }
         if !(gone && m.projects.is_empty()) {
             body.push(self.projects(m, pending, &tk, window, cx).into_any_element());
+        }
+        if !gone {
+            body.push(self.start_url(m, d.as_ref(), pending, &tk, cx).into_any_element());
         }
         if let Some(d) = d.as_ref().filter(|d| !d.webhooks.is_empty()) {
             body.push(webhooks(m, d, &tk, cx).into_any_element());
@@ -357,7 +360,7 @@ impl Panel {
             .into_any_element()
     }
 
-    fn agents(&mut self, m: &MachineView, d: Option<&Details>, pending: Option<&'static str>, tk: &Tokens, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn agents(&mut self, m: &MachineView, d: Option<&Details>, pending: Option<&'static str>, tk: &Tokens, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let tk = *tk;
         let t = self.t();
         let items: Vec<AnyElement> = match d {
@@ -431,6 +434,26 @@ impl Panel {
                         } else {
                             kit::caption(&tk).child("signed out").into_any_element()
                         };
+                        // GitHub can also take a token limited to some repositories.
+                        let right = if name == GITHUB && !mine {
+                            let m2 = m.clone();
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(
+                                    kit::link("github-token", "Some repos only…", disabled, &tk)
+                                        .text_size(px(11.5))
+                                        .when(!disabled, |l| l.on_click(cx.listener(move |this, _, window, cx| this.open_github_token(&m2, window, cx)))),
+                                )
+                                .child(right)
+                                .into_any_element()
+                        } else {
+                            right
+                        };
+                        let repos = a.reach.clone();
+                        let expires = a.expires.as_deref().map(model::expires_line);
                         // Who it's signed in as, and the plan's limits, under its name.
                         let who = a.signed_in.then(|| model::account_line(a)).flatten();
                         let usage = a.signed_in.then(|| model::usage_line(&a.account, now)).flatten();
@@ -445,10 +468,13 @@ impl Panel {
                             .child(kit::agent_name(name, 13., tk.fg))
                             .when(a.signed_in && who.is_none(), |c| c.child(kit::ok("signed in", &tk)))
                             .children(who.map(|w| kit::caption(&tk).truncate().child(w)))
-                            .children(usage.map(|u| kit::caption(&tk).when(high, |c| c.text_color(tk.accent_text)).child(u)));
+                            .children(usage.map(|u| kit::caption(&tk).when(high, |c| c.text_color(tk.accent_text)).child(u)))
+                            .children(repos.map(|r| kit::caption(&tk).truncate().child(r)))
+                            .children(expires.map(|e| kit::caption(&tk).child(e)));
                         let line = kit::line().child(left).child(right).into_any_element();
                         let code = (name == GITHUB).then(|| m.github_code.clone()).flatten();
-                        std::iter::once(line).chain(code.map(|code| github_code(code, &tk, cx).into_any_element()))
+                        let form = (name == GITHUB).then(|| self.github_token_form(m, disabled, pending, &tk, window, cx)).flatten();
+                        std::iter::once(line).chain(code.map(|code| github_code(code, &tk, cx).into_any_element())).chain(form)
                     })
                     .collect();
                 if !items.is_empty() {
@@ -463,6 +489,91 @@ impl Panel {
             }
         };
         kit::section("agents", None, None, kit::lines(items, &tk), &tk)
+    }
+
+    /// The field for a GitHub token limited to some repositories, while it's open for this
+    /// machine: GitHub's page for making one, then the token pasted in, masked.
+    fn github_token_form(&mut self, m: &MachineView, disabled: bool, pending: Option<&'static str>, tk: &Tokens, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let tk = *tk;
+        let (_, input, _) = self.github_token_input.as_ref().filter(|(id, _, _)| *id == m.id)?;
+        let input = input.clone();
+        let focused = input.focus_handle(cx).is_focused(window);
+        let checking = pending == Some(model::github_token(String::new()).busy);
+        let (m1, name) = (m.clone(), m.name.clone());
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .pb(px(8.))
+                .child(line_note(&tk).child(format!(
+                    "Make a token on GitHub that reaches only the repos {name} should use. The page opens filled in. If the repos are under an organization, set Resource owner at the top to it (a token covers one owner). Under Repository access, choose Only select repositories and pick them, then generate it and paste it here."
+                )))
+                .child(
+                    div().flex().child(
+                        kit::button("github-token-page", Btn::Outline, Size::Sm, false, &tk).child("Open GitHub").on_click(cx.listener(move |this, _, _, cx| {
+                            if let Err(e) = t3agent37_lib::app::open_url(&t3agent37_lib::machine::signin::github_token_page(&name)) {
+                                this.toast(format!("Couldn't open GitHub: {e:#}"), true, cx);
+                            }
+                        })),
+                    ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .h(px(34.))
+                        .px(px(10.))
+                        .border_1()
+                        .border_color(if focused { tk.accent_text } else { tk.frame })
+                        .child(div().flex_1().min_w_0().font_family(MONO).text_size(px(12.)).child(Input::new(&input).appearance(false).px_0().py_0().h(px(18.))))
+                        .child(kit::caption(&tk).child("enter uses it")),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(
+                            kit::button("github-token-use", Btn::Solid, Size::Sm, disabled && !checking, &tk)
+                                .map(|b| if checking { b.child(kit::dots(self.t(), tk.accent_fg)).child("Checking…") } else { b.child("Use token") })
+                                .when(!disabled, |b| b.on_click(cx.listener(move |this, _, window, cx| this.use_github_token(&m1, window, cx)))),
+                        )
+                        .child(kit::link("github-token-cancel", "Cancel", false, &tk).text_size(px(11.5)).on_click(cx.listener(move |this, _, window, cx| {
+                            this.github_token_input = None;
+                            this.focus.focus(window, cx);
+                            cx.notify();
+                        }))),
+                )
+                .child(kit::caption(&tk).child("With such a token, pull request CI is read from GitHub Actions only."))
+                .into_any_element(),
+        )
+    }
+
+    fn open_github_token(&mut self, m: &MachineView, window: &mut Window, cx: &mut Context<Self>) {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("github_pat_…").masked(true));
+        let m2 = m.clone();
+        let sub = cx.subscribe_in(&input, window, move |this: &mut Self, _, event: &InputEvent, window, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.use_github_token(&m2, window, cx);
+            }
+        });
+        input.update(cx, |s, cx| s.focus(window, cx));
+        self.github_token_input = Some((m.id.clone(), input, sub));
+        cx.notify();
+    }
+
+    /// The field closes as the token goes, so it isn't kept here.
+    fn use_github_token(&mut self, m: &MachineView, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, input, _)) = self.github_token_input.as_ref().filter(|(id, _, _)| *id == m.id) else { return };
+        let token = input.read(cx).value().trim().to_owned();
+        if token.is_empty() {
+            return self.toast("Paste the token from GitHub first", true, cx);
+        }
+        self.github_token_input = None;
+        self.focus.focus(window, cx);
+        self.track(m, model::github_token(token), cx);
     }
 
     /// Its dev servers, and opening them in the browser here at localhost.
@@ -674,6 +785,88 @@ impl Panel {
             }
         };
         kit::section("other devices", None, None, kit::lines(items, &tk), &tk)
+    }
+
+    /// The start URL: threads in its projects from Grok, a shortcut or a script, over HTTPS.
+    fn start_url(&mut self, m: &MachineView, d: Option<&Details>, pending: Option<&'static str>, tk: &Tokens, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let tk = *tk;
+        let t = self.t();
+        let disabled = pending.is_some() || m.state == State::Missing;
+        let small_link = |id: &'static str, action: Action, cx: &mut Context<Self>| {
+            let m = m.clone();
+            let text = if pending == Some(action.busy) { action.busy.to_string() } else { action.label.clone() };
+            kit::link(id, text, disabled, &tk)
+                .px_0()
+                .py(px(2.))
+                .text_size(px(11.5))
+                .when(!disabled, |l| l.on_click(cx.listener(move |this, _, _, cx| this.track(&m, action.clone(), cx))))
+        };
+        let items: Vec<AnyElement> = match d {
+            None => skeleton_lines(1, t, &tk),
+            Some(Details { start: None, .. }) => {
+                let on = model::start_on();
+                let running = pending == Some(on.busy);
+                let m2 = m.clone();
+                vec![
+                    kit::line()
+                        .child(div().flex_1().min_w_0().child("Start URL"))
+                        .child(
+                            kit::button("start-on", Btn::Outline, Size::Sm, disabled && !running, &tk)
+                                .map(|b| if running { b.child(kit::dots(t, tk.accent_text)).child(on.busy) } else { b.child(on.label.clone()) })
+                                .when(!disabled, |b| b.on_click(cx.listener(move |this, _, _, cx| this.track(&m2, on.clone(), cx)))),
+                        )
+                        .into_any_element(),
+                    line_note(&tk)
+                        .child(format!(
+                            "An address that Grok, a phone shortcut or a script can call to start threads in {}'s projects, check on them and follow up. A request wakes {}. Whoever has the URL acts as you.",
+                            m.name, m.name
+                        ))
+                        .into_any_element(),
+                ]
+            }
+            Some(Details { start: Some(s), .. }) => {
+                let right = match s.url.clone() {
+                    Some(url) => kit::link("copy-start", "Copy URL", false, &tk)
+                        .px(px(4.))
+                        .py(px(2.))
+                        .text_size(px(11.5))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                            this.toast("Start URL copied", false, cx);
+                        }))
+                        .into_any_element(),
+                    None => kit::caption(&tk).flex_none().child("URL once it's up").into_any_element(),
+                };
+                let model = s.default_model.clone().unwrap_or_else(|| "the machine's default model".into());
+                let copy = |id: &'static str, label: &'static str, value: String, done: &'static str, cx: &mut Context<Self>| {
+                    kit::link(id, label, false, &tk).px(px(4.)).py(px(2.)).text_size(px(11.5)).on_click(cx.listener(move |this, _, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+                        this.toast(done, false, cx);
+                    }))
+                };
+                let split = s.address.clone().map(|address| {
+                    kit::line()
+                        .gap(px(6.))
+                        .child(div().flex_1().min_w_0().text_color(tk.muted).child("Token in a header instead"))
+                        .child(copy("copy-start-address", "Copy address", address, "Start address copied (no token in it)", cx))
+                        .child(copy("copy-start-token", "Copy token", s.token.clone(), "Start token copied", cx))
+                });
+                vec![
+                    kit::line().gap(px(6.)).child(div().flex_1().min_w_0().child("Start URL")).child(kit::ok("on", &tk)).child(right).into_any_element(),
+                ]
+                .into_iter()
+                .chain(split.map(IntoElement::into_any_element))
+                .chain([line_note(&tk)
+                        .child(format!(
+                            "GET it for {}'s projects; POST it {{\"project\", \"prompt\"}} to start a thread, with a project's own model or {model}. Its answer has a URL for the thread's status, reply and follow-ups. To keep the token out of the address, send it as \"Authorization: Bearer <token>\" to the address instead. Whoever has the token acts as you.",
+                            m.name
+                        ))
+                        .child(div().flex().gap(px(12.)).child(small_link("start-replace", model::start_replace(), cx)).child(small_link("start-off", model::start_off(), cx)))
+                        .into_any_element()])
+                .collect()
+            }
+        };
+        kit::section("start url", None, None, kit::lines(items, &tk), &tk)
     }
 
     /// Its T3 projects, each GitHub one with its issues switch and settings, and adding one the

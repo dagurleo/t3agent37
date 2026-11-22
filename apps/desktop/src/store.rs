@@ -52,6 +52,13 @@ pub struct Machine {
     /// Whether `github_login` was ever checked: unchecked, None means "don't know yet".
     #[serde(default)]
     pub github_checked: bool,
+    /// What its GitHub token can push to, when it's a fine-grained one, as the machine tested it;
+    /// None for gh's own sign-in, which reaches every repository the account can.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_reach: Option<GithubReach>,
+    /// When that token expires, as GitHub said when it was given: `2027-02-20 12:00:00 UTC`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_token_expires: Option<String>,
     /// T3 Connect: new devices wait for approval from one already connected. None until read.
     #[serde(default)]
     pub connect_approval: Option<bool>,
@@ -74,6 +81,52 @@ pub struct Machine {
     /// T3's webhook tasks on it, as last read there (`machine/hooks.rs`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hooks: Vec<HookTask>,
+    /// Its start URL, while it's on (`machine/start.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<StartLink>,
+}
+
+/// What a fine-grained GitHub token can push to, as its machine tested it repository by
+/// repository (`machine/signin.rs`). GitHub doesn't say which repositories such a token reaches:
+/// `/user/repos` lists the account's, whatever the token.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubReach {
+    /// A short hash of the token it was tested for, so a new token is tested again; empty when
+    /// the test failed, so it's tried again.
+    pub token: String,
+    pub repos: Vec<String>,
+    /// The one owner every one of whose repositories it reaches ("All repositories").
+    #[serde(default)]
+    pub all_of: Option<String>,
+}
+
+impl GithubReach {
+    /// "all 85 of dagurleo's repos", "only skildingur, tantalum and 2 more", "no repos".
+    pub fn describe(&self) -> String {
+        if self.token.is_empty() {
+            return "limited to some repos (not checked yet)".into();
+        }
+        if let Some(owner) = &self.all_of {
+            return format!("all {} of {owner}'s repos", self.repos.len());
+        }
+        let names: Vec<&str> = self.repos.iter().map(|r| r.rsplit('/').next().unwrap_or(r)).collect();
+        match names.len() {
+            0 => "can't push to any repo".into(),
+            1..=3 => format!("only {}", names.join(", ")),
+            n => format!("only {}, {} and {} more", names[0], names[1], n - 2),
+        }
+    }
+}
+
+/// A machine's start URL, `<inbox URL>/start/<token>`: the token makes it a secret.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StartLink {
+    pub token: String,
+    /// A hash of the settings last written on the machine, so they go again when its models change.
+    #[serde(default)]
+    pub sent: u64,
 }
 
 /// One of T3's scheduled tasks that a webhook triggers.

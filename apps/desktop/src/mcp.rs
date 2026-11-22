@@ -106,6 +106,15 @@ enum Call {
         model: Option<String>,
         effort: Option<String>,
     },
+    AddMachineHere {
+        machine: String,
+    },
+    StartUrl {
+        machine: String,
+        on: Option<bool>,
+        #[serde(default)]
+        replace: bool,
+    },
 }
 
 fn router<T: Tools>(tools: Arc<T>) -> Router {
@@ -207,9 +216,21 @@ fn tool_list() -> Value {
              sleeping | creating | error | missing | unknown (still checking)) and a detail line, agents that still need a sign-in \
              there (signedOut) and the coding agents signed in (signedIn), its T3 projects (with progress while one is being added, and the label \
              and agent of those whose GitHub issues it works on), plus Agent37 \
-             costs today and this month (UTC) and the wallet balance left.",
+             costs today and this month (UTC) and the wallet balance left. `elsewhere` lists \
+             t3agent37 machines on the same Agent37 account that this computer doesn't have \
+             (made with t3agent37 on another computer): add_machine_here adds one.",
             json!({}),
             &[],
+        ),
+        tool(
+            "add_machine_here",
+            "Adds a machine made with t3agent37 on another computer (one of list_machines' \
+             `elsewhere`, by name or id) to this computer, with a T3 sign-in of its own there; the \
+             other computer keeps using it as before, and settings such as GitHub issues and the \
+             start URL are the machine's, so both show the same. Wakes the machine, then T3 Code \
+             asks the user to add it as a backend.",
+            json!({ "machine": machine }),
+            &["machine"],
         ),
         tool(
             "create_machine",
@@ -351,6 +372,29 @@ fn tool_list() -> Value {
             &["machine", "project", "on"],
         ),
         tool(
+            "start_url",
+            "A machine's start URL, for an assistant such as Grok, a phone shortcut or a script: \
+             anything that can send a web request starts and follows agent threads in the machine's \
+             projects with it, no T3 sign-in needed. GET it for the projects and models there; POST \
+             it JSON {project (title, folder or id), prompt, and optionally title, model, effort, \
+             worktree: true for a git worktree of its own} to start a thread (201, with a threadUrl); \
+             GET the threadUrl for its status and the agent's reply once done; POST the threadUrl \
+             {prompt} to follow up. The token can also go in an `Authorization: Bearer` header \
+             instead of the URL, to the address without it (`.../start`). Threads run in \
+             full-access mode with the project's default \
+             model, else Claude Opus 5.5 at high. A request wakes a sleeping machine. Whoever has \
+             the URL acts as the user, so give it to the user only. Without `on`, says whether it's \
+             on and what it is, never waking the machine; on: true turns it on and returns it, false \
+             turns it off; replace gives it a new token, and the old URL stops working. Turning it \
+             on or off wakes the machine.",
+            json!({
+                "machine": machine,
+                "on": { "type": "boolean", "description": "Turn it on (true) or off (false); leave out to just read it" },
+                "replace": { "type": "boolean", "description": "A new URL; the old one stops working" },
+            }),
+            &["machine"],
+        ),
+        tool(
             "machine_details",
             "One machine's cost today and this month, time awake today, which agents are signed in \
              there and as whom (email and plan; for Claude and Codex also the plan's usage limits, \
@@ -361,7 +405,8 @@ fn tool_list() -> Value {
              null is time no project explains), and T3's webhook tasks there (webhooks: scheduled \
              tasks a webhook triggers, as last read), each with a wakingUrl: send the task's \
              deliveries there instead of T3's own URL, and a delivery wakes the machine instead of \
-             waiting for it to be up (T3 checks the token, signature and filters as usual). Never \
+             waiting for it to be up (T3 checks the token, signature and filters as usual), and \
+             its start URL while it's on (start: url and defaultModel; see start_url). Never \
              wakes it.",
             json!({ "machine": machine }),
             &["machine"],
@@ -442,7 +487,14 @@ impl Tools for App {
 
 async fn run(app: &Arc<App>, call: Call) -> Result<String> {
     Ok(match call {
-        Call::ListMachines {} => json!({ "machines": app.views(), "costs": app.costs() }).to_string(),
+        Call::ListMachines {} => json!({ "machines": app.views(), "elsewhere": app.elsewhere(), "costs": app.costs() }).to_string(),
+        Call::AddMachineHere { machine } => {
+            let m = app.add_machine_here(&machine).await?;
+            format!(
+                "{} is on this computer too, with its own sign-in there; the other computer keeps it. T3 Code now asks the user to add it as a backend; tell them to confirm.",
+                m.record().name
+            )
+        }
         Call::CreateMachine { name, size, projects } => {
             let m = app.create_machine(&name, size.as_deref().unwrap_or("default"), projects).await?;
             format!(
@@ -509,6 +561,27 @@ async fn run(app: &Arc<App>, call: Call) -> Result<String> {
             format!("Wake link for {}: {url}", m.record().name)
         }
         Call::MachineDetails { machine } => serde_json::to_string(&app.details(&machine)?)?,
+        Call::StartUrl { machine, on, replace } => {
+            let m = app.machine(&machine)?;
+            let name = m.record().name;
+            let on = on.or(replace.then_some(true));
+            let url = match on {
+                None => m.start_url(),
+                Some(on) => m.set_start(on, replace).await?,
+            };
+            match (on, url) {
+                (Some(false), _) => format!("{name}'s start URL is off; the old URL no longer works."),
+                (_, Some(url)) => {
+                    let (address, token) = m.start_parts().unwrap_or_default();
+                    format!(
+                        "Start URL for {name}: {url}\nOr, keeping the token out of the address: {address} with the header \"Authorization: Bearer {token}\" (its thread URLs then come without the token and take the same header).\nGET it for the projects and models; POST it {{\"project\", \"prompt\"}} to start a thread. New threads use a project's own default model, else {}.",
+                        m.start_agent().unwrap_or_else(|| "the machine's default".into())
+                    )
+                }
+                (None, None) if m.record().start.is_some() => format!("{name}'s start URL is on, but its address comes back the next time {name} is up."),
+                (_, None) => format!("{name} has no start URL; call this with on: true to make one."),
+            }
+        }
         Call::SetAutoSleep { machine, on } => {
             let m = app.machine(&machine)?;
             m.keep_awake(if on { Some(0) } else { None }).await?;
@@ -693,7 +766,7 @@ mod tests {
     async fn lists_tools_and_rejects_unknown_methods() {
         let tools = rpc("tools/list", json!({})).await["result"]["tools"].clone();
         let names: Vec<&str> = tools.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names.len(), 18);
+        assert_eq!(names.len(), 20);
         assert!(names.contains(&"sign_in_agent") && names.contains(&"delete_machine") && names.contains(&"wake_link"));
         assert_eq!(rpc("ping", json!({})).await["result"], json!({}));
         assert_eq!(rpc("resources/list", json!({})).await["error"]["code"], -32601);

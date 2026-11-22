@@ -68,11 +68,11 @@ impl MachineRuntime {
         }
     }
 
-    /// The inbox's public URL exists while the machine has GitHub issues on or webhook tasks,
-    /// and goes with the last of them: nothing delivers there any more.
+    /// The inbox's public URL exists while the machine has GitHub issues on, webhook tasks or
+    /// its start URL, and goes with the last of them: nothing delivers there any more.
     pub(super) async fn sync_inbox_url(&self) -> Result<Option<String>> {
         let r = self.record();
-        let wanted = !r.issues.is_empty() || !r.hooks.is_empty();
+        let wanted = !r.issues.is_empty() || !r.hooks.is_empty() || r.start.is_some();
         let (id, a37) = (self.sandbox_id(), &self.shared.a37);
         let url = match (wanted, r.inbox_url) {
             (true, Some(url)) => Some(url),
