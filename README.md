@@ -32,6 +32,7 @@ What was kept and what changed:
 - Previews: a dev server an agent starts on a machine opens in your own browser at `localhost`, through T3's tunnel. Opening the page wakes the machine; a tab left open doesn't keep it awake
 - Projects set up as they're added: their T3 setup scripts run, or their dependencies install from the lockfile (Bun, pnpm, Yarn, npm, uv and more), and their T3 scripts come along
 - GitHub issues as pull requests (a prototype): turn on **issues** for a project, pick the label and the agent, label an issue, and the machine wakes, works on it in a branch of its own and opens a pull request. Reviews, `/agent` comments and failed CI on that pull request go back to the agent, which pushes fixes to it
+- Webhooks that wake the machine: T3 Code's scheduled tasks can run on a webhook, and each machine's details give those tasks an address that wakes it, so a Sentry alert, a Linear issue or a Zapier step starts an agent on a sleeping machine right away
 - Notifications when a machine's agents finish, when your Agent37 wallet runs low, and when a machine stays awake for hours
 - Cost per machine, today and this month, and your wallet balance. Each machine's details also show what each of its projects cost this month: the time its agents worked, plus the idle minutes after, at the machine's hourly rate
 - An MCP server, so agents on your computer can manage machines and open their ports
@@ -86,6 +87,8 @@ The machine reacts 👀 to what it passed on. Comments within 30 seconds of each
 
 The issue's text goes to an agent that can push, so only labels from people with push access count. Anyone who can open an issue can still write its text, so on a public repo read an issue before you label it.
 
+To have any service start an agent, make a scheduled task with a webhook in T3 Code: its prompt, project and agent, and optionally filters (run only when `body.action` is `created`, say) and a signing secret. T3's own webhook URL goes through T3 Connect, which can't wake a sleeping machine: the delivery waits until something else wakes it. So the machine's details list its webhook tasks under **webhooks**, each with **Copy URL**: an address that wakes the machine first. T3 checks the token, signature and filters, logs the delivery and runs the task, as with its own URL. A delivery T3 turns away or filters out lets the machine sleep again after about a minute. The addresses work without T3 Connect too. Anyone with one can send the task deliveries, so treat it like a password, and use a signing secret for anything that matters.
+
 Settings has the notifications (wallet line, hours awake, agents finishing) and whether projects get set up when they're added.
 
 ## Pricing, roughly
@@ -135,6 +138,7 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 - A sleeping machine that worked on issues stays asleep when T3 Code reconnects. T3 Code asks for the issue's details then, and the last answer is kept for that.
 - Choosing the label and the agent (through the MCP tool): changing them kept the webhook and its secret and made the new label. An issue given the old label was left alone; the new label started a thread on Claude Sonnet 5.5 at low effort, which opened a pull request.
 - Feedback on the agent's pull requests, on a private repo: a `/agent` comment, a review with a line comment and a failed Cloudflare Workers build each reached the issue's thread about 30 s later (the build's failure 1.5 minutes after the push that broke it). Each time the agent pushed a fix to the branch (for the build, a revert of the breaking commit) and replied once; its replies started no new round. Webhooks made before this got the new events on the inbox's first start, and pull requests already open were taken as seen. A plain comment (no `/agent`) on a sleeping machine's repo woke it, and it slept again about 70 s later instead of after 5 minutes.
+- Webhooks that wake, on skiff: a delivery to a webhook task's waking URL, sent while the machine slept, was answered in 1.5 s with T3's own 202, and the task ran 0.1 s later. The app read the task from T3 and made the address. T3 took deliveries at the task's path directly: a matching one ran, a filtered one was answered 202 without a run, and a wrong token got 404. A filtered-out delivery to the sleeping machine let it sleep again 72 s later.
 - Cost per project, on skiff: an agent turn in one project counted for it, the idle minute after it too, and the wake before it as other time; the app showed both, priced at the machine's rate.
 - Accounts per machine, on the machine's side: the account, plan and usage limits read from what T3 recorded on skiff. Starting Claude's and GitHub's logins again over an existing sign-in, then canceling, kept the old sign-in, and the login's end was recorded.
 - T3 Code's own update, on the machine's side: switching a running machine to T3's service launcher (T3 Connect came back by itself), the server then reporting that it can update itself, T3's update call taking it from one nightly to the next (back in about 5 s), provisioning afterwards with the older desktop version keeping the newer T3 without a restart, and a reboot of the boot container starting the new version.
@@ -147,7 +151,7 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 - How long T3 Connect takes to come back after a machine has slept for many hours.
 - The **issues** switch and its settings in the panel. The same calls worked through the MCP tool (`github_issues`): off, on, and changing the label and the agent.
 - Finishing a switch to another account in the browser, the private window opening, and the agents section in the panel itself. Also, signing Codex in over an existing sign-in.
-- The projects' costs in the panel's details (the same figures came through the MCP tool).
+- The projects' costs and the webhooks section in the panel's details (the same figures and addresses came through the MCP tool).
 - The "Update N machines?" dialog in T3 Code updating a machine through the proxy (the same update call was made on the machine itself). Also, under the launcher: creating a machine, moving one to a newer desktop version by provisioning, and turning on T3 Connect.
 
 **Known gaps:**

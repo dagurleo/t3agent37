@@ -211,7 +211,7 @@ pub async fn inbox_url(a37: &Agent37, instance: &str) -> Result<String> {
     let found = a37.get(instance).await?.ok_or_else(|| anyhow!("the machine no longer exists on Agent37"))?;
     match found.public_ports.iter().find(|p| p.port == INBOX_PORT) {
         Some(p) => Ok(p.url.clone()),
-        None => a37.add_public_port(instance, INBOX_PORT, "t3agent37 GitHub inbox").await,
+        None => a37.add_public_port(instance, INBOX_PORT, "t3agent37 inbox").await,
     }
 }
 
@@ -270,6 +270,8 @@ pub async fn create(
         previews: Vec::new(),
         issues: Vec::new(),
         usage: None,
+        inbox_url: None,
+        hooks: Vec::new(),
     })
 }
 

@@ -1,5 +1,9 @@
-// t3agent37's GitHub inbox, on the VM inside the watchdog: GitHub issues become T3 threads, and
-// what people say on the pull requests those threads open goes back to them.
+// t3agent37's inbox, on the VM inside the watchdog: GitHub issues become T3 threads, and what
+// people say on the pull requests those threads open goes back to them. It also takes deliveries
+// for T3's own webhook tasks (scheduled tasks triggered by a webhook) at their path, /api/hooks/
+// <task>/<token>, and passes them to T3 here: through this public URL a delivery wakes the
+// machine, where T3's own URL (through T3 Connect's relay) waits until something else wakes it.
+// T3 checks the token, signature and filters, logs the delivery and runs the task.
 //
 // For each repo the user turned issues on for, t3agent37 makes a webhook on GitHub (with this
 // machine's own gh login) that sends the repo's issue, comment, review and CI events to a public
@@ -47,6 +51,10 @@ const DB_PATH = join(homedir(), ".t3", "userdata", "statev2.sqlite");
 const T3_ORIGIN = "http://127.0.0.1:3773";
 const WATCHDOG = "http://127.0.0.1:3774";
 const MAX_BODY = 1 << 20;
+/** T3's webhook tasks' path on its server. */
+const HOOKS_PREFIX = "/api/hooks/";
+/** Headers that are about this hop, not the delivery. */
+const HOP_HEADERS = new Set(["host", "connection", "keep-alive", "transfer-encoding", "content-length", "upgrade", "te", "trailer", "proxy-authorization", "proxy-connection", "accept-encoding"]);
 /** What GitHub's collaborator permission says for someone who can push. */
 const PUSHERS = new Set(["admin", "maintain", "write"]);
 /** What the webhook sends: issues to take on, and what happens on their pull requests. */
@@ -158,8 +166,8 @@ async function projectPath(projectId) {
   }
 }
 
-async function waitForT3() {
-  const until = Date.now() + 120_000;
+async function waitForT3(limitMs = 120_000) {
+  const until = Date.now() + limitMs;
   while (Date.now() < until) {
     try {
       if ((await fetch(`${T3_ORIGIN}/.well-known/t3/environment`, { signal: AbortSignal.timeout(3_000) })).ok) return;
@@ -533,7 +541,11 @@ export function startInbox({ touch, log, wokeForNothing = () => {} }) {
       res.writeHead(code, { "content-type": "application/json" });
       res.end(JSON.stringify(value));
     };
-    if (req.method !== "POST") return reply(405, { error: "POST only" });
+    // Turned away: whatever woke the machine for it, it sleeps again soon.
+    const refuse = (code, error) => {
+      wokeForNothing();
+      reply(code, { error });
+    };
     const chunks = [];
     let size = 0;
     req.on("data", (c) => {
@@ -541,18 +553,20 @@ export function startInbox({ touch, log, wokeForNothing = () => {} }) {
       if (size <= MAX_BODY) chunks.push(c);
     });
     req.on("end", () => {
-      if (size > MAX_BODY) return reply(413, { error: "too large" });
+      if (size > MAX_BODY) return refuse(413, "too large");
       const body = Buffer.concat(chunks);
+      if (req.url?.startsWith(HOOKS_PREFIX)) return forwardHook(req, body, res, { log, wokeForNothing });
+      if (req.method !== "POST") return refuse(405, "POST only");
       const { repos } = readConfig();
       const repo = Object.keys(repos).find((r) => signedWith(repos[r].secret, body, req.headers["x-hub-signature-256"]));
-      if (!repo) return reply(401, { error: "bad signature" });
+      if (!repo) return refuse(401, "bad signature");
       let event;
       try {
         event = JSON.parse(body);
       } catch {
-        return reply(400, { error: "not JSON" });
+        return refuse(400, "not JSON");
       }
-      if (event.repository?.full_name?.toLowerCase() !== repo.toLowerCase()) return reply(400, { error: "wrong repo" });
+      if (event.repository?.full_name?.toLowerCase() !== repo.toLowerCase()) return refuse(400, "wrong repo");
       const kind = req.headers["x-github-event"];
       if (kind === "ping") return reply(200, { ok: true, repo });
       const watch = repos[repo];
@@ -583,6 +597,38 @@ export function startInbox({ touch, log, wokeForNothing = () => {} }) {
   }).listen(INBOX_PORT, "0.0.0.0");
 
   return { catchUp: () => enqueue(() => catchUp(hooks)) };
+}
+
+/**
+ * A delivery for one of T3's webhook tasks, passed to T3 as it came, T3's answer passed back. It
+ * doesn't hold the machine up itself: a run it starts does (the watchdog sees the agent), and a
+ * delivery T3 turns away or filters out lets a machine it woke sleep again soon.
+ */
+async function forwardHook(req, body, res, { log, wokeForNothing }) {
+  const headers = Object.fromEntries(
+    Object.entries(req.headers)
+      .filter(([name]) => !HOP_HEADERS.has(name))
+      .map(([name, value]) => [name, Array.isArray(value) ? value.join(", ") : value]),
+  );
+  try {
+    // Just after a cold boot T3 may still be starting; senders wait 10 to 30 s.
+    await waitForT3(20_000);
+    const answer = await fetch(`${T3_ORIGIN}${req.url}`, {
+      method: req.method,
+      headers,
+      body: req.method === "GET" || req.method === "HEAD" ? undefined : body,
+      signal: AbortSignal.timeout(20_000),
+    });
+    const text = await answer.text();
+    res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" });
+    res.end(text);
+    if (!answer.ok) log(`hooks: T3 answered ${answer.status} to a delivery`);
+  } catch (e) {
+    log(`hooks: passing a delivery to T3: ${e.message}`);
+    res.writeHead(503, { "content-type": "application/json", "retry-after": "30" });
+    res.end(JSON.stringify({ error: "T3 isn't answering on this machine yet" }));
+  }
+  wokeForNothing();
 }
 
 // --- t3agent37's command: turning a repo on or off -------------------------------------------

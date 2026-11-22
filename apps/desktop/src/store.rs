@@ -68,6 +68,26 @@ pub struct Machine {
     /// Its awake time by project, as its watchdog last said (kept for while it sleeps).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<ProjectUsage>,
+    /// Its inbox's public URL (`issues.mjs`), while it has GitHub issues on or webhook tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbox_url: Option<String>,
+    /// T3's webhook tasks on it, as last read there (`machine/hooks.rs`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hooks: Vec<HookTask>,
+}
+
+/// One of T3's scheduled tasks that a webhook triggers.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HookTask {
+    pub id: String,
+    pub title: String,
+    pub enabled: bool,
+    pub project_id: String,
+    /// Its path on T3's server, `/api/hooks/<task>/<token>`. The token makes it a secret.
+    pub path: String,
+    /// Deliveries must also be signed with its secret.
+    pub signed: bool,
 }
 
 /// Awake time by project, as a machine's watchdog meters it: seconds per project id this UTC

@@ -41,6 +41,9 @@ impl Panel {
         if !(gone && m.projects.is_empty()) {
             body.push(self.projects(m, pending, &tk, window, cx).into_any_element());
         }
+        if let Some(d) = d.as_ref().filter(|d| !d.webhooks.is_empty()) {
+            body.push(webhooks(m, d, &tk, cx).into_any_element());
+        }
         body.push(self.more(m, busy, &tk, cx).into_any_element());
         body.push(
             div()
@@ -831,6 +834,47 @@ impl Panel {
         });
         div().flex().flex_col().flex_none().child(head).children(body)
     }
+}
+
+/// T3's webhook tasks on the machine, with addresses that wake it for their deliveries.
+fn webhooks(m: &MachineView, d: &Details, tk: &Tokens, cx: &mut Context<Panel>) -> impl IntoElement + use<> {
+    let mut items: Vec<AnyElement> = Vec::new();
+    for (i, w) in d.webhooks.iter().enumerate() {
+        let about: Vec<&str> = [w.project.as_deref(), (!w.enabled).then_some("off"), w.signed.then_some("signed")].into_iter().flatten().collect();
+        let left = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .flex_1()
+            .min_w_0()
+            .child(div().min_w_0().truncate().child(w.title.clone()))
+            .when(!about.is_empty(), |l| l.child(kit::caption(tk).flex_none().child(about.join(" · "))));
+        let right = match w.waking_url.clone() {
+            Some(url) => {
+                let title = w.title.clone();
+                kit::link(("copy-webhook", i), "Copy URL", false, tk)
+                    .px(px(4.))
+                    .py(px(2.))
+                    .text_size(px(11.5))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                        this.toast(format!("Waking URL for \"{title}\" copied"), false, cx);
+                    }))
+                    .into_any_element()
+            }
+            None => kit::caption(tk).flex_none().child("URL once it's up").into_any_element(),
+        };
+        items.push(kit::line().gap(px(6.)).child(left).child(right).into_any_element());
+    }
+    items.push(
+        line_note(tk)
+            .child(format!(
+                "T3 Code's scheduled tasks with a webhook. Deliveries to these URLs wake {} first, so they don't wait for it; T3 checks the token, signature and filters as usual. Anyone with a URL can send it deliveries.",
+                m.name
+            ))
+            .into_any_element(),
+    );
+    kit::section("webhooks", Some(d.webhooks.len()), None, kit::lines(items, tk), tk)
 }
 
 /// Back button and title for sub-views. Esc goes back too (the panel's key handler).

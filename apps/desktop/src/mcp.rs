@@ -358,7 +358,11 @@ fn tool_list() -> Value {
              listening there (servers), its ports forwarded to this computer (previews), and its awake \
              time and cost per project this UTC month and today (projectCosts, at the machine's hourly \
              rate; a project gets the time its agents worked and the idle minutes after; projectId \
-             null is time no project explains). Never wakes it.",
+             null is time no project explains), and T3's webhook tasks there (webhooks: scheduled \
+             tasks a webhook triggers, as last read), each with a wakingUrl: send the task's \
+             deliveries there instead of T3's own URL, and a delivery wakes the machine instead of \
+             waiting for it to be up (T3 checks the token, signature and filters as usual). Never \
+             wakes it.",
             json!({ "machine": machine }),
             &["machine"],
         ),

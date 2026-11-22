@@ -630,6 +630,24 @@ pub struct MachineDetails {
     pub previews: Vec<crate::store::Preview>,
     /// What its awake time cost per project, this UTC month and today, most first.
     pub project_costs: Vec<ProjectCost>,
+    /// T3's webhook tasks on it, as last read there, with addresses that wake it.
+    pub webhooks: Vec<Webhook>,
+}
+
+/// One of T3's webhook tasks on a machine.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Webhook {
+    pub task_id: String,
+    pub title: String,
+    /// Its project's title, when the project is still there.
+    pub project: Option<String>,
+    pub enabled: bool,
+    /// Deliveries must also be signed with its secret.
+    pub signed: bool,
+    /// Where to send its deliveries so they wake the machine. None until the machine has an
+    /// inbox URL, which it gets the next time it's up.
+    pub waking_url: Option<String>,
 }
 
 /// A project's share of a machine's awake time and what it cost at the machine's hourly rate.
@@ -733,6 +751,21 @@ impl App {
                 crate::machine::provision::size(&record.size).map_or(0.0, |s| s.hourly),
                 &chrono::Utc::now().format("%Y-%m-%d").to_string(),
             ),
+            webhooks: {
+                let projects = machine.projects();
+                record
+                    .hooks
+                    .iter()
+                    .map(|h| Webhook {
+                        task_id: h.id.clone(),
+                        title: h.title.clone(),
+                        project: projects.iter().find(|p| p.id == h.project_id).map(|p| p.title.clone()),
+                        enabled: h.enabled,
+                        signed: h.signed,
+                        waking_url: record.inbox_url.as_deref().map(|u| crate::machine::hooks::waking_url(u, h)),
+                    })
+                    .collect()
+            },
             previews: record.previews,
         })
     }

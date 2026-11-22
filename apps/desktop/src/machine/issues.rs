@@ -242,7 +242,9 @@ impl MachineRuntime {
         }
         let (id, a37) = (self.sandbox_id(), &self.shared.a37);
         if let Some(settings) = settings {
+            // Asked of Agent37 each time: the webhook must get the URL that works now.
             let url = provision::inbox_url(a37, &id).await?;
+            self.update_record(|r| r.inbox_url = Some(url.clone()));
             let agent_name = settings.choice(&self.issue_models()).map(|c| c.name.clone());
             let input = json!({
                 "repo": repo,
@@ -263,11 +265,9 @@ impl MachineRuntime {
         } else {
             self.kept_awake(a37.exec_ok(&id, &command("off", &json!({ "repo": repo })), 60)).await?;
             self.update_record(|r| r.issues.retain(|w| w.repo != repo));
-            if self.record().issues.is_empty() {
-                // Nothing delivers there any more: the URL goes too.
-                if let Err(e) = a37.delete_public_port(&id, provision::INBOX_PORT).await {
-                    tracing::warn!("removing {}'s inbox URL: {e:#}", self.id());
-                }
+            // The URL stays while webhook tasks use it.
+            if let Err(e) = self.sync_inbox_url().await {
+                tracing::warn!("{}'s inbox URL: {e:#}", self.id());
             }
         }
         self.shared.changed();

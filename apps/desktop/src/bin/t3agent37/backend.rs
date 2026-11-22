@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use futures::channel::mpsc::UnboundedSender;
 use t3agent37_lib::agent37::{Agent37, KEYS_PAGE};
-pub use t3agent37_lib::app::{AgentLogin, ProjectCost};
+pub use t3agent37_lib::app::{AgentLogin, ProjectCost, Webhook};
 use t3agent37_lib::app::{self, App, Costs, GITHUB, MachineView, Setup};
 use t3agent37_lib::machine::Event;
 use t3agent37_lib::machine::issues::{IssueSettings, ModelChoice};
@@ -90,6 +90,8 @@ pub struct Details {
     pub issue_models: Vec<ModelChoice>,
     /// What its awake time cost per project this month, most first.
     pub project_costs: Vec<ProjectCost>,
+    /// T3's webhook tasks on it, with addresses that wake it.
+    pub webhooks: Vec<Webhook>,
 }
 
 /// A command for one machine.
@@ -244,7 +246,10 @@ impl Backend {
         let mut issue_models = Vec::new();
         if let Ok(machine) = app.machine(id) {
             issue_models = machine.issue_models();
-            self.rt.spawn(async move { machine.refresh_servers().await });
+            self.rt.spawn(async move {
+                machine.refresh_servers().await;
+                machine.refresh_hooks().await;
+            });
         }
         Ok(Details {
             id: d.id,
@@ -261,6 +266,7 @@ impl Backend {
             previews: d.previews,
             issue_models,
             project_costs: d.project_costs,
+            webhooks: d.webhooks,
         })
     }
 

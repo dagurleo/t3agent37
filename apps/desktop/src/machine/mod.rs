@@ -3,6 +3,7 @@
 
 mod capture;
 mod connect;
+pub mod hooks;
 pub mod issues;
 mod link;
 pub mod preview;
@@ -1120,6 +1121,7 @@ impl MachineRuntime {
                             this.refresh_projects().await;
                             this.refresh_connect().await;
                             this.refresh_github().await;
+                            this.refresh_hooks().await;
                         }
                     });
                 }
