@@ -166,6 +166,10 @@ These were checked on `agent37-ubuntu` VMs in November 2026. Several contradict 
 - A delivery to a public port wakes the VM. It was answered in 0.8 s (16 s after the VM fell asleep) and 1.3 s (after 2 minutes asleep), inside GitHub's 10 s limit.
 - Once, a wake took over a minute: GitHub recorded a 500 ("context deadline exceeded") and doesn't retry by itself. That's why the inbox also catches up on every wake.
 - Agent37's API can still say `sleeping` for a few seconds after a request woke the VM.
+- A review with line comments arrives as `pull_request_review.submitted` plus a `pull_request_review_comment.created` per comment, within milliseconds, so the second costs no wake. A review's line comments are at `pulls/{n}/reviews/{id}/comments`.
+- The machine's gh login is usually its owner's account, so the agent's pull requests are the owner's own: GitHub won't let them approve or request changes there, so their reviews come as `COMMENTED`. What the agent writes shows as the owner too, which is why the inbox goes by `<sub>t3agent37</sub>`, never by author. The same login sees the owner's unsubmitted (`PENDING`) reviews; they're skipped.
+- Cloudflare Workers Builds reports as a check run (app `cloudflare-workers-and-pages`, "Workers Builds: <name>"), so `check_suite.completed` and `commits/{sha}/check-runs` cover it. Its log is only on Cloudflare's dashboard; the agent found the cause from the diff.
+- Bot comments that edit themselves (Cloudflare's build status) send `issue_comment.edited` for each change.
 
 **Resize and costs**
 - Resize works only on a running VM, which then boots fresh onto its new shape.

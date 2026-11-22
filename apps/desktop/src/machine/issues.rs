@@ -2,7 +2,8 @@
 //! webhook on its GitHub repo sends issue events to the machine's inbox (`issues.mjs`, in the
 //! watchdog) at a public URL of the machine, so a delivery wakes it. An issue that someone who
 //! can push there gives the project's label becomes a T3 thread in a worktree and branch of its
-//! own, with the project's chosen agent, told to open a pull request. The webhook is made with
+//! own, with the project's chosen agent, told to open a pull request; reviews, `/agent` comments
+//! and failed CI on that pull request go back to the same thread. The webhook is made with
 //! the machine's own gh login, and the secret that signs its deliveries is made on the machine
 //! and kept only there and on GitHub.
 
@@ -365,6 +366,16 @@ mod tests {
         // A label alone needs no model list.
         assert_eq!(start.clone().with(&[], Some("todo"), None, None).unwrap().label, "todo");
         assert!(start.with(&[], None, Some("opus"), None).is_err());
+    }
+
+    /// The inbox's rules for feedback (`issues.test.mjs`), when Node is here.
+    #[test]
+    fn inbox_rules() {
+        let run = std::process::Command::new("node").args(["--test", "src/machine/issues.test.mjs"]).current_dir(env!("CARGO_MANIFEST_DIR")).output();
+        match run {
+            Ok(out) => assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)),
+            Err(e) => eprintln!("node isn't here ({e}): the inbox's tests didn't run"),
+        }
     }
 
     #[test]

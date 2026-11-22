@@ -714,7 +714,7 @@ impl Panel {
         }
         if m.projects.iter().any(on_github) {
             let note = if m.projects.iter().any(|p| p.issues.is_some()) {
-                format!("An issue given its project's label becomes a thread on {} that opens a pull request. Only labels from people who can push count.", m.name)
+                format!("An issue given its project's label becomes a thread on {} that opens a pull request, and reviews, comments starting /agent and failed CI there go back to it. Only people who can push count.", m.name)
             } else {
                 format!("Issues: label a GitHub issue and {} works on it and opens a pull request, waking up for it.", m.name)
             };

@@ -31,7 +31,7 @@ What was kept and what changed:
 - T3 Connect, to reach a machine from your phone or a browser, plus a wake link for when it's asleep. Optionally, new devices wait for your approval, and agent activity is pushed to the T3 Code phone app
 - Previews: a dev server an agent starts on a machine opens in your own browser at `localhost`, through T3's tunnel. Opening the page wakes the machine; a tab left open doesn't keep it awake
 - Projects set up as they're added: their T3 setup scripts run, or their dependencies install from the lockfile (Bun, pnpm, Yarn, npm, uv and more), and their T3 scripts come along
-- GitHub issues as pull requests (a prototype): turn on **issues** for a project, pick the label and the agent, label an issue, and the machine wakes, works on it in a branch of its own and opens a pull request
+- GitHub issues as pull requests (a prototype): turn on **issues** for a project, pick the label and the agent, label an issue, and the machine wakes, works on it in a branch of its own and opens a pull request. Reviews, `/agent` comments and failed CI on that pull request go back to the agent, which pushes fixes to it
 - Notifications when a machine's agents finish, when your Agent37 wallet runs low, and when a machine stays awake for hours
 - Cost per machine, today and this month, and your wallet balance
 - An MCP server, so agents on your computer can manage machines and open their ports
@@ -75,6 +75,14 @@ To hand GitHub issues to a machine, flip **issues** next to the project in its d
 1. GitHub tells the machine through a webhook, which wakes it if it sleeps.
 2. The machine checks that whoever added the label can push to the repo, comments on the issue, and starts a thread on it in T3 Code, in a new worktree on the branch `issue-<number>`.
 3. The agent pushes the branch and opens a pull request that fixes the issue. Then the machine sleeps as usual.
+
+Then work with it on the pull request, as with a colleague:
+
+- **Reviews** from people who can push go to the agent: the summary and the line comments.
+- **Comments** go to it when a line starts with `/agent`, such as `/agent rename the flag too`. Other comments are left alone.
+- **CI** failing on the branch's latest commit sends it the failed checks.
+
+The machine reacts 👀 to what it passed on. Comments within 30 seconds of each other go as one message. The agent works in the same thread, so it remembers the issue, then pushes to the same branch and replies once on the pull request. To stop a loop from running up costs, a pull request gets at most 6 rounds a day, and CI at most 3 fixes in a row; the machine says so on the pull request when it pauses. Each comment, review and CI run on the repo reaches the machine, and wakes it if it sleeps; when it's nothing for the agent, the machine goes back to sleep after about a minute.
 
 The issue's text goes to an agent that can push, so only labels from people with push access count. Anyone who can open an issue can still write its text, so on a public repo read an issue before you label it.
 
@@ -126,6 +134,7 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 - GitHub issues, end to end on a private repo: labeling an issue on a sleeping machine woke it, started a thread in its own worktree, and the agent opened a pull request (a README change, with the repo's checks run). Deliveries woke a sleeping machine in 0.8 and 1.3 s. Once it took over a minute, so GitHub gave up after 10 s, and the machine took the issue on when it came up.
 - A sleeping machine that worked on issues stays asleep when T3 Code reconnects. T3 Code asks for the issue's details then, and the last answer is kept for that.
 - Choosing the label and the agent (through the MCP tool): changing them kept the webhook and its secret and made the new label. An issue given the old label was left alone; the new label started a thread on Claude Sonnet 5.5 at low effort, which opened a pull request.
+- Feedback on the agent's pull requests, on a private repo: a `/agent` comment, a review with a line comment and a failed Cloudflare Workers build each reached the issue's thread about 30 s later (the build's failure 1.5 minutes after the push that broke it). Each time the agent pushed a fix to the branch (for the build, a revert of the breaking commit) and replied once; its replies started no new round. Webhooks made before this got the new events on the inbox's first start, and pull requests already open were taken as seen. A plain comment (no `/agent`) on a sleeping machine's repo woke it, and it slept again about 70 s later instead of after 5 minutes.
 - Accounts per machine, on the machine's side: the account, plan and usage limits read from what T3 recorded on skiff. Starting Claude's and GitHub's logins again over an existing sign-in, then canceling, kept the old sign-in, and the login's end was recorded.
 - T3 Code's own update, on the machine's side: switching a running machine to T3's service launcher (T3 Connect came back by itself), the server then reporting that it can update itself, T3's update call taking it from one nightly to the next (back in about 5 s), provisioning afterwards with the older desktop version keeping the newer T3 without a restart, and a reboot of the boot container starting the new version.
 
@@ -141,7 +150,7 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 
 **Known gaps:**
 - **Previews list only servers T3's agents and terminals started.** Others (Docker, a database) open by number.
-- **GitHub issues are a prototype.** Only an issue's title and description go to the agent, not its comments. The machine's GitHub login covers all its repos: there's no token limited to one repo yet. A label renamed in the settings leaves the old one in the repo.
+- **GitHub issues are a prototype.** Only an issue's title and description go to the agent, not its comments. On the pull request, CI counts through check runs (GitHub Actions, Cloudflare and other GitHub apps), not the older commit statuses some services post, and only the first 100 reviews and comments are read. The machine's GitHub login covers all its repos: there's no token limited to one repo yet. A label renamed in the settings leaves the old one in the repo.
 - **Usage limits are as of the machine's last check.** T3 checks them while the machine is awake, so a sleeping machine's details say how old they are, and use of the same plan elsewhere (your laptop, another machine) shows up only at the next check.
 - **The machine's model list, as t3agent37 records it, once lost Claude's models** for about a minute after T3 re-checked its providers (cause not found; see CONTRIBUTING.md). The issue settings fall back on the last full list.
 

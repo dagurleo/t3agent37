@@ -333,8 +333,10 @@ fn tool_list() -> Value {
              list_machines shows them; `issues` has the settings of those that are on). On: a webhook \
              on the project's GitHub repo sends its issues to the machine, and an issue that someone \
              who can push there gives the project's label becomes a T3 thread on the machine, with \
-             the project's agent, in its own worktree and branch, that opens a pull request. A \
-             delivery wakes a sleeping machine. The label and the agent are kept as they are unless \
+             the project's agent, in its own worktree and branch, that opens a pull request. \
+             Feedback on that pull request goes back to the same thread: reviews and comments with \
+             a line starting `/agent` from people who can push, and CI failing on its latest \
+             commit. A delivery wakes a sleeping machine. The label and the agent are kept as they are unless \
              given; the first time, `agent` and Claude Opus 5.5 at high effort. Calling it again \
              with on: true changes them. Needs GitHub signed in on the machine, with admin rights \
              on the repo. Wakes the machine.",
@@ -541,7 +543,7 @@ async fn run(app: &Arc<App>, call: Call) -> Result<String> {
             m.set_issues(&p.id, on, settings.clone()).await?;
             if let Some(s) = settings {
                 format!(
-                    "{name} now works on {}'s GitHub issues with {}: label one `{}` and it starts a thread there that opens a pull request.",
+                    "{name} now works on {}'s GitHub issues with {}: label one `{}` and it starts a thread there that opens a pull request. Reviews, comments starting /agent and failed CI on that pull request go back to the thread.",
                     p.title,
                     s.agent(&models),
                     s.label

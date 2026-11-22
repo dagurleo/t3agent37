@@ -36,6 +36,10 @@ const TICK_MS = 5_000;
 const DRAIN_GRACE_MS = 20_000;
 // A tick that arrives this late means the VM was frozen: a warm resume after a stop.
 const RESUMED_GAP_MS = 30_000;
+// A wake for nothing (a GitHub delivery the inbox ignored, within BRIEF_WINDOW_MS of the wake):
+// the machine sleeps again after BRIEF_SLEEP_MS idle instead of sleepAfterSecs, unless it's used.
+const BRIEF_WINDOW_MS = 2 * 60_000;
+const BRIEF_SLEEP_MS = 60_000;
 // Still running this long after going quiet: neither the laptop app nor auto-sleep (idle 5 min)
 // took it, so something else keeps traffic flowing. Back to active, and try again later.
 const STOP_SETTLE_MS = 10 * 60_000;
@@ -49,6 +53,12 @@ let phase = "active";
 let lastActivityAt = Date.now();
 /** Last time an agent, the user or a keep-awake held it up: CPU load holds it only so long after. */
 let lastUsedAt = Date.now();
+// The last wake, whether anything used the machine since, whether it's a brief one, and when the
+// inbox last ignored a delivery (which can arrive before the tick notices the wake).
+let wokeAt = 0;
+let usedSinceWake = true;
+let briefWake = false;
+let ignoredAt = 0;
 /** Agent runs in flight: top-level threads and subagents, and the top-level ones by id and title. */
 let working = { threads: 0, subagents: 0, list: [] };
 // T3 not answering: an agent might be mid-turn, so count it as working, but only this long, so a
@@ -276,7 +286,20 @@ function drain() {
 /** Someone uses the machine: it stays up, and CPU load may hold it up again. */
 function touch(reason) {
   lastUsedAt = Date.now();
+  if (reason !== "resumed") {
+    usedSinceWake = true;
+    briefWake = false;
+  }
   hold(reason);
+}
+
+/** The inbox ignored a delivery: if that's all that woke the machine, it sleeps again soon. */
+function wokeForNothing() {
+  ignoredAt = Date.now();
+  if (!usedSinceWake && ignoredAt - wokeAt < BRIEF_WINDOW_MS && !briefWake) {
+    briefWake = true;
+    log("woken for nothing: sleeping again soon");
+  }
 }
 
 /** Keeps the machine up and restarts the idle countdown, calling off a sleep in progress. */
@@ -318,6 +341,9 @@ async function tick() {
   const now = Date.now();
   if (now - lastTickAt > RESUMED_GAP_MS) {
     setKeepAwake(0);
+    wokeAt = now;
+    usedSinceWake = false;
+    briefWake = now - ignoredAt < BRIEF_WINDOW_MS;
     touch("resumed");
     inbox.catchUp();
   }
@@ -353,8 +379,9 @@ async function tick() {
   if (unknownBusy()) return;
 
   const idleMs = now - lastActivityAt;
+  const sleepAfterMs = briefWake ? Math.min(BRIEF_SLEEP_MS, config.sleepAfterSecs * 1000) : config.sleepAfterSecs * 1000;
   // Not awaited: ticks go on during the save, so an agent starting to work calls it off.
-  if (phase === "active" && idleMs >= config.sleepAfterSecs * 1000) drain();
+  if (phase === "active" && idleMs >= sleepAfterMs) drain();
   else if (phase === "draining" && now - drainStartedAt >= DRAIN_GRACE_MS) finishDrain();
 }
 
@@ -380,7 +407,7 @@ function status() {
     keepAwakeForever: keepAwakeUntil === Infinity,
     keepAwakeSecs: Number.isFinite(keepAwakeUntil) ? Math.max(0, Math.ceil((keepAwakeUntil - Date.now()) / 1000)) : 0,
     idleSecs: Math.floor((Date.now() - lastActivityAt) / 1000),
-    sleepAfterSecs: config.sleepAfterSecs,
+    sleepAfterSecs: briefWake ? Math.min(BRIEF_SLEEP_MS / 1000, config.sleepAfterSecs) : config.sleepAfterSecs,
     nextDueAt,
     workDue: dueSoon(),
     // While stopping, it names the sequence the machine stops at: the proxy trusts its
@@ -420,7 +447,7 @@ const server = createServer(async (req, res) => {
       const { resumed } = JSON.parse((await readBody(req)) || "{}");
       if (resumed) {
         setKeepAwake(0);
-        touch("resumed");
+        touch("resumed by the app");
         inbox.catchUp();
         return reply(200, status());
       }
@@ -498,7 +525,7 @@ createServer((req, res) => {
 
 // GitHub issues, for the repos the user turned them on for (issues.mjs). Its public URL is made
 // with the first such repo; until then nothing reaches this port.
-const inbox = startInbox({ touch, log });
+const inbox = startInbox({ touch, log, wokeForNothing });
 
 function wakePage() {
   const name = (readFileSafe(join(HOME, ".t3agent37", "name")).trim() || "Your machine").replace(
