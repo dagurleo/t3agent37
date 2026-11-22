@@ -62,6 +62,43 @@ pub struct Machine {
     /// Its ports forwarded to this computer, in the order they were added.
     #[serde(default)]
     pub previews: Vec<Preview>,
+    /// Its projects whose GitHub issues it works on (`machine/issues.rs`).
+    #[serde(default)]
+    pub issues: Vec<IssueWatch>,
+}
+
+/// A project whose GitHub repo sends its issues to the machine through a webhook.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueWatch {
+    /// T3's project id on the machine.
+    pub project_id: String,
+    /// `owner/name` on GitHub.
+    pub repo: String,
+    pub hook_id: Option<u64>,
+    /// The label and the agent. Missing in records from before they could be chosen.
+    #[serde(flatten)]
+    pub settings: IssueSettings,
+}
+
+/// Which label hands a project's issue to the machine, and the agent that works on it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct IssueSettings {
+    pub label: String,
+    /// T3's provider instance: `claudeAgent`, `codex`, ….
+    pub provider: String,
+    /// The model's slug there, e.g. `claude-opus-5-5`.
+    pub model: String,
+    /// T3's model options as `id=value`, e.g. `effort=high`.
+    pub options: Vec<String>,
+}
+
+impl Default for IssueSettings {
+    /// Claude Code at its best, on issues labeled `agent`.
+    fn default() -> Self {
+        Self { label: "agent".into(), provider: "claudeAgent".into(), model: "claude-opus-5-5".into(), options: vec!["effort=high".into()] }
+    }
 }
 
 /// A port on the machine that `localhost:local_port` reaches here.

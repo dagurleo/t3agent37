@@ -67,6 +67,8 @@ pub struct MachineView {
     pub paired: bool,
     /// Agents that need a sign-in on this machine (done in T3 Code, per machine).
     pub signed_out: Vec<String>,
+    /// Coding agents signed in on it (Claude, Codex; not GitHub).
+    pub signed_in: Vec<String>,
     /// Its T3 projects as last seen, and those being added (with their progress).
     pub projects: Vec<crate::machine::projects::MachineProject>,
     /// When a "keep awake" runs out (unix ms); none when off or until stopped.
@@ -74,6 +76,8 @@ pub struct MachineView {
     pub keep_awake_forever: bool,
     /// GitHub's one-time code while a GitHub sign-in waits for it.
     pub github_code: Option<String>,
+    /// The agent whose sign-in runs, until it's done or canceled.
+    pub signing_in: Option<String>,
 }
 
 /// `detail` as `template` with `{left}` filled in: the time left until `ends_at` (unix ms).
@@ -427,6 +431,7 @@ impl App {
         if !discard {
             machine.check_idle_before_delete().await?;
         }
+        machine.remove_issue_hooks().await;
         let a37 = &self.shared.a37;
         let record = {
             // Held until retired: a later wake then sees Missing.
@@ -479,10 +484,12 @@ impl App {
                 countdown: None,
                 paired: false,
                 signed_out: Vec::new(),
+                signed_in: Vec::new(),
                 projects: Vec::new(),
                 keep_awake_until: None,
                 keep_awake_forever: false,
                 github_code: None,
+            signing_in: None,
             });
         }
         views
@@ -626,11 +633,17 @@ pub struct MachineDetails {
 /// Its gh login shows as one more agent: what its git pushes and clones private repos with.
 pub const GITHUB: &str = "GitHub";
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentLogin {
     pub name: String,
     pub signed_in: bool,
+    /// Who it's signed in as, as last seen: email, plan and usage limits (Claude, Codex).
+    #[serde(flatten)]
+    pub account: crate::machine::signin::Account,
+    /// GitHub's account, `@login`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
 }
 
 impl App {
@@ -640,18 +653,31 @@ impl App {
         let id = machine.id();
         let record = machine.record();
         let usage = self.usage(&machine);
-        let agents = machine.cache.lock().unwrap().agents();
+        let providers = machine.cache.lock().unwrap().providers();
         Ok(MachineDetails {
             id,
             cost_today: usage.today,
             cost_month: usage.month,
             awake_secs_today: usage.awake_secs_today,
             // Only agents whose status is known, so this agrees with `signed_out` in the list.
-            agents: agents
-                .into_iter()
-                .filter(|(_, status)| matches!(status.as_str(), "authenticated" | "unauthenticated"))
-                .map(|(name, status)| AgentLogin { name, signed_in: status == "authenticated" })
-                .chain(record.github_checked.then(|| AgentLogin { name: GITHUB.into(), signed_in: record.github_login.is_some() }))
+            agents: providers
+                .iter()
+                .filter_map(|p| {
+                    let name = p["displayName"].as_str()?.to_owned();
+                    let signed_in = match p["auth"]["status"].as_str()? {
+                        "authenticated" => true,
+                        "unauthenticated" => false,
+                        _ => return None,
+                    };
+                    let account = if signed_in { crate::machine::signin::account(p) } else { Default::default() };
+                    Some(AgentLogin { name, signed_in, account, login: None })
+                })
+                .chain(record.github_checked.then(|| AgentLogin {
+                    name: GITHUB.into(),
+                    signed_in: record.github_login.is_some(),
+                    account: Default::default(),
+                    login: record.github_login.clone(),
+                }))
                 .collect(),
             t3_version: record.t3_version,
             created_at: record.created_at,
@@ -748,7 +774,10 @@ fn view(m: &MachineRuntime) -> MachineView {
         }
         (Power::Running, Some(_)) | (Power::Stopping, _) => (Sleeping, "Going to sleep".to_owned()),
         (Power::Running, None) => (Idle, "Running".to_owned()),
-        (Power::Starting, _) => (Waking, "Waking up".to_owned()),
+        (Power::Starting, _) => match m.upgrading() {
+            Some(version) => (Waking, format!("Updating T3 to {version}")),
+            None => (Waking, "Waking up".to_owned()),
+        },
         (Power::Stopped, _) => match m.scheduled_wake() {
             Some(due) => (Asleep, format!("Asleep · wakes {} for scheduled work", local_time(due))),
             None => (Asleep, "Asleep · bills disk only".to_owned()),
@@ -771,12 +800,14 @@ fn view(m: &MachineRuntime) -> MachineView {
             }
             out
         },
+        signed_in: m.cache.lock().unwrap().signed_in_providers(),
         projects: m.projects(),
         keep_awake_until: running_watchdog
             .filter(|w| w.keep_awake_secs > 0)
             .map(|w| unix_ms_after(w.received, w.keep_awake_secs)),
         keep_awake_forever: running_watchdog.is_some_and(|w| w.keep_awake_forever),
         github_code: m.github_code(),
+        signing_in: m.signing_in(),
     }
 }
 
@@ -833,8 +864,83 @@ pub fn open_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// Opens `url` in a private window of the default browser, where nobody is signed in, so a
+/// sign-in there can be any account. Chrome, Edge, Brave, Vivaldi, Opera and Firefox take a flag
+/// for it; Safari and others can't be asked, so they get `url` as usual. True: private.
+pub fn open_url_private(url: &str) -> Result<bool> {
+    #[cfg(target_os = "macos")]
+    if let Some((bundle, flag)) = default_browser().and_then(|b| private_flag(&b).map(|f| (b, f))) {
+        // `-n` so the flag reaches a browser that's already running.
+        let opened = std::process::Command::new("open")
+            .args(["-n", "-b", &bundle, "--args", flag, url])
+            .status()
+            .is_ok_and(|s| s.success());
+        if opened {
+            return Ok(true);
+        }
+    }
+    open_url(url)?;
+    Ok(false)
+}
+
+/// Whether `open_url_private` gets a private window from the default browser. Looked up once.
+pub fn private_window_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    #[cfg(target_os = "macos")]
+    return *AVAILABLE.get_or_init(|| default_browser().is_some_and(|b| private_flag(&b).is_some()));
+    #[cfg(not(target_os = "macos"))]
+    return *AVAILABLE.get_or_init(|| false);
+}
+
+/// The bundle id of the app that opens https links, from Launch Services' settings. None for
+/// the system default, Safari.
+#[cfg(target_os = "macos")]
+fn default_browser() -> Option<String> {
+    let plist = dirs::home_dir()?
+        .join("Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist");
+    let out = std::process::Command::new("plutil")
+        .args(["-extract", "LSHandlers", "json", "-o", "-"])
+        .arg(plist)
+        .output()
+        .ok()?;
+    let handlers: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    handlers
+        .as_array()?
+        .iter()
+        .find(|h| h["LSHandlerURLScheme"] == "https")?["LSHandlerRoleAll"]
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// The command-line flag that opens a private window in this browser, if it has one.
+fn private_flag(bundle: &str) -> Option<&'static str> {
+    let b = bundle.to_ascii_lowercase();
+    let chromium = ["com.google.chrome", "org.chromium.", "com.brave.browser", "com.vivaldi.vivaldi"];
+    if chromium.iter().any(|p| b.starts_with(p)) {
+        Some("--incognito")
+    } else if b.starts_with("com.microsoft.edgemac") {
+        Some("--inprivate")
+    } else if b.starts_with("com.operasoftware.opera") {
+        Some("--private")
+    } else if b.starts_with("org.mozilla.") {
+        Some("--private-window")
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn private_window_flags() {
+        assert_eq!(super::private_flag("com.google.Chrome"), Some("--incognito"));
+        assert_eq!(super::private_flag("com.google.chrome.canary"), Some("--incognito"));
+        assert_eq!(super::private_flag("com.microsoft.edgemac"), Some("--inprivate"));
+        assert_eq!(super::private_flag("org.mozilla.firefox"), Some("--private-window"));
+        assert_eq!(super::private_flag("com.apple.Safari"), None);
+        assert_eq!(super::private_flag("company.thebrowser.Browser"), None);
+    }
+
     #[test]
     fn valid_name() {
         for ok in ["dev", "0", "a-b-", &"a".repeat(32)] {

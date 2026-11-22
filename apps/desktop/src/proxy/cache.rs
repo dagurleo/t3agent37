@@ -235,8 +235,9 @@ impl Cache {
             .for_each(|(_, r)| record_config_event(&mut r.value, &event));
     }
 
-    /// The machine's enabled agent providers, per its last config: name and auth status.
-    pub fn agents(&self) -> Vec<(String, String)> {
+    /// The machine's enabled agent providers as T3 describes them in its last config: name,
+    /// auth, models.
+    pub fn providers(&self) -> Vec<Value> {
         self.streams
             .iter()
             .filter(|(k, _)| k.starts_with("subscribeServerConfig "))
@@ -246,6 +247,14 @@ impl Cache {
             .into_iter()
             .flatten()
             .filter(|p| p["enabled"] == true)
+            .cloned()
+            .collect()
+    }
+
+    /// The machine's enabled agent providers, per its last config: name and auth status.
+    pub fn agents(&self) -> Vec<(String, String)> {
+        self.providers()
+            .iter()
             .filter_map(|p| {
                 Some((
                     p["displayName"].as_str()?.to_owned(),
@@ -253,6 +262,11 @@ impl Cache {
                 ))
             })
             .collect()
+    }
+
+    /// Enabled agents that are signed in.
+    pub fn signed_in_providers(&self) -> Vec<String> {
+        self.agents().into_iter().filter(|(_, s)| s == "authenticated").map(|(n, _)| n).collect()
     }
 
     /// Enabled agents that are not signed in.

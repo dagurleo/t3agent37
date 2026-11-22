@@ -1,7 +1,7 @@
 //! Headless driver for development: runs the app model and proxies without the tray.
 //! Reads commands from stdin: list | create <name> [size] | pair <id> | wake <id> | sleep <id> |
 //! keep <id> [minutes] (keep awake; none: until stopped, 0 ends it) | connect <id> | delete <id> | costs |
-//! code <id> (a pairing URL, T3 Code left alone) | state <id> | github <id> (sign its git in to GitHub)
+//! code <id> (a pairing URL, T3 Code left alone) | state <id> | github <id> [another] (sign its git in to GitHub; another: in a private window)
 
 use std::sync::Arc;
 use t3agent37_lib::app::{self, App, Setup};
@@ -77,7 +77,7 @@ async fn command(app: &Arc<App>, words: &[String]) -> anyhow::Result<()> {
         Some("wake") => app.machine(&arg(1))?.ensure_awake().await?,
         Some("sleep") => app.machine(&arg(1))?.sleep_now().await?,
         Some("connect") => app.machine(&arg(1))?.turn_on_connect().await?,
-        Some("github") => app.machine(&arg(1))?.sign_in_github().await?,
+        Some("github") => app.machine(&arg(1))?.sign_in_github(arg(2) == "another").await?,
         Some("keep") => app.machine(&arg(1))?.keep_awake(words.get(2).map(|m| m.parse()).transpose()?).await?,
         Some("delete") => app.delete_machine(&*app.machine(&arg(1))?, arg(2) == "discard").await?,
         Some("costs") => {

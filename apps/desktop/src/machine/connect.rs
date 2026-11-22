@@ -195,7 +195,7 @@ impl MachineRuntime {
                  kill -TERM -- -$pid 2>/dev/null; \
                  for _ in $(seq 1 120); do [ \"$(cat $d/t3.pid 2>/dev/null)\" != \"$pid\" ] && break; sleep 0.5; done; \
                  [ \"$(cat $d/t3.pid 2>/dev/null)\" != \"$pid\" ] || kill -KILL -- -$pid 2>/dev/null; \
-                 for _ in $(seq 1 240); do curl -sf -o /dev/null http://127.0.0.1:3773/.well-known/t3/environment && exit 0; sleep 0.5; done; \
+                 for _ in $(seq 1 240); do curl -sf -m 5 -o /dev/null http://127.0.0.1:3773/.well-known/t3/environment && exit 0; sleep 0.5; done; \
                  echo 'T3 did not come back'; exit 1",
                 240,
             )

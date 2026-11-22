@@ -17,6 +17,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { availableParallelism, homedir } from "node:os";
 import { join } from "node:path";
+import { startInbox } from "./issues.mjs";
 
 const HOME = homedir();
 const CONFIG_PATH = join(HOME, ".t3agent37", "config.json");
@@ -69,6 +70,8 @@ async function refreshWorking() {
   try {
     working = await checkWorking();
     unknownSince = 0;
+    // T3 answering for the first time since this watchdog started (a boot, an upgrade).
+    if (!t3Answered) inbox.catchUp();
     t3Answered = true;
   } catch (e) {
     working = { threads: 0, subagents: 0, list: [] };
@@ -316,6 +319,7 @@ async function tick() {
   if (now - lastTickAt > RESUMED_GAP_MS) {
     setKeepAwake(0);
     touch("resumed");
+    inbox.catchUp();
   }
   lastTickAt = now;
   if (phase === "stopping") {
@@ -417,6 +421,7 @@ const server = createServer(async (req, res) => {
       if (resumed) {
         setKeepAwake(0);
         touch("resumed");
+        inbox.catchUp();
         return reply(200, status());
       }
       // Going quiet is not final: until the VM actually sleeps, use calls it off.
@@ -443,6 +448,11 @@ const server = createServer(async (req, res) => {
       if (!valid) return reply(400, { error: "minutes must be null (until stopped) or 0 to " + MAX_KEEP_AWAKE_MINUTES });
       setKeepAwake(minutes);
       if (minutes !== 0) touch("keep awake");
+      return reply(200, status());
+    }
+    if (req.method === "POST" && req.url === "/issues/check") {
+      // A repo was just turned on: issues labeled before that.
+      inbox.catchUp();
       return reply(200, status());
     }
     if (req.method === "POST" && req.url === "/sleep-ack") {
@@ -485,6 +495,10 @@ createServer((req, res) => {
   });
   res.end(req.method === "HEAD" ? undefined : wakePage());
 }).listen(WAKE_PORT, "0.0.0.0");
+
+// GitHub issues, for the repos the user turned them on for (issues.mjs). Its public URL is made
+// with the first such repo; until then nothing reaches this port.
+const inbox = startInbox({ touch, log });
 
 function wakePage() {
   const name = (readFileSafe(join(HOME, ".t3agent37", "name")).trim() || "Your machine").replace(

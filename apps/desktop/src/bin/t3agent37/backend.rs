@@ -8,8 +8,10 @@ use std::time::Duration;
 
 use futures::channel::mpsc::UnboundedSender;
 use t3agent37_lib::agent37::{Agent37, KEYS_PAGE};
+pub use t3agent37_lib::app::AgentLogin;
 use t3agent37_lib::app::{self, App, Costs, GITHUB, MachineView, Setup};
 use t3agent37_lib::machine::Event;
+use t3agent37_lib::machine::issues::{IssueSettings, ModelChoice};
 pub use t3agent37_lib::machine::preview::LocalServer;
 use t3agent37_lib::machine::provision::{SIZES, SizeInfo};
 use t3agent37_lib::machine::signin::Agent;
@@ -73,8 +75,8 @@ pub struct Details {
     pub cost_today: f64,
     pub cost_month: f64,
     pub awake_secs_today: u64,
-    /// Name and whether it is signed in, GitHub last.
-    pub agents: Vec<(String, bool)>,
+    /// Its agents' sign-ins and accounts, GitHub last.
+    pub agents: Vec<AgentLogin>,
     pub t3_version: String,
     pub created_at: i64,
     pub connect: bool,
@@ -84,6 +86,8 @@ pub struct Details {
     pub servers: Vec<LocalServer>,
     /// Its ports forwarded here.
     pub previews: Vec<Preview>,
+    /// The models its signed-in agents offer, to work on GitHub issues with.
+    pub issue_models: Vec<ModelChoice>,
 }
 
 /// A command for one machine.
@@ -100,8 +104,11 @@ pub enum Cmd {
     /// Minutes; `None`: until stopped (auto sleep off); 0 ends it.
     KeepAwake(Option<u32>),
     Resize(String),
-    /// An agent name as `signed_out` lists it.
-    SignIn(String),
+    /// `agent`: a name as `signed_out` lists it. `another`: another account than the browser's,
+    /// in a private window; over a sign-in, it switches the machine's account.
+    SignIn { agent: String, another: bool },
+    /// Stops the sign-in that runs on it; the old sign-in stays.
+    CancelSignIn,
     /// `discard`: delete even while work runs on it.
     Delete { discard: bool },
     /// T3 Connect: new devices wait for approval.
@@ -112,6 +119,9 @@ pub enum Cmd {
     OpenPort(u16),
     /// Stops forwarding a port.
     ClosePort(u16),
+    /// GitHub issues given a label in one of its projects (by id) become threads there, with
+    /// `settings` (on: the project's own, or the defaults, when `None`).
+    Issues { project: String, on: bool, settings: Option<IssueSettings> },
 }
 
 pub type Res<T = ()> = Result<T, String>;
@@ -229,7 +239,9 @@ impl Backend {
     pub fn details(&self, id: &str) -> Res<Details> {
         let app = self.inner.app()?;
         let d = app.details(id).map_err(err)?;
+        let mut issue_models = Vec::new();
         if let Ok(machine) = app.machine(id) {
+            issue_models = machine.issue_models();
             self.rt.spawn(async move { machine.refresh_servers().await });
         }
         Ok(Details {
@@ -237,7 +249,7 @@ impl Backend {
             cost_today: d.cost_today,
             cost_month: d.cost_month,
             awake_secs_today: d.awake_secs_today,
-            agents: d.agents.into_iter().map(|a| (a.name, a.signed_in)).collect(),
+            agents: d.agents,
             t3_version: d.t3_version,
             created_at: d.created_at,
             connect: d.connect,
@@ -245,6 +257,7 @@ impl Backend {
             connect_push: d.connect_push,
             servers: d.servers,
             previews: d.previews,
+            issue_models,
         })
     }
 
@@ -321,10 +334,23 @@ async fn act(inner: Arc<Inner>, id: String, cmd: Cmd) -> Res<Option<String>> {
         Cmd::TurnOnConnect => machine.turn_on_connect().await,
         Cmd::KeepAwake(minutes) => machine.keep_awake(minutes).await,
         Cmd::Resize(size) => machine.resize(&size).await,
-        Cmd::SignIn(agent) if agent == GITHUB => machine.sign_in_github().await,
-        Cmd::SignIn(agent) => {
-            let agent = Agent::from_name(&agent).ok_or_else(|| format!("{agent} has to be signed in from T3 Code's settings"))?;
-            machine.sign_in(agent).await
+        Cmd::SignIn { agent, another } => {
+            if agent == GITHUB {
+                machine.sign_in_github(another).await.map_err(err)?;
+            } else {
+                let a = Agent::from_name(&agent).ok_or_else(|| format!("{agent} has to be signed in from T3 Code's settings"))?;
+                machine.sign_in(a, another).await.map_err(err)?;
+            }
+            // Who it's signed in as now, for the toast.
+            let who = app.details(&id).ok().and_then(|d| {
+                let a = d.agents.into_iter().find(|a| a.name == agent)?;
+                a.account.email.or(a.login.map(|l| format!("@{l}")))
+            });
+            return Ok(who);
+        }
+        Cmd::CancelSignIn => {
+            machine.cancel_sign_in();
+            Ok(())
         }
         Cmd::Delete { discard } => app.delete_machine(&machine, discard).await,
         Cmd::ConnectApproval(on) => machine.set_connect_approval(on).await,
@@ -334,6 +360,7 @@ async fn act(inner: Arc<Inner>, id: String, cmd: Cmd) -> Res<Option<String>> {
             machine.unforward(port);
             Ok(())
         }
+        Cmd::Issues { project, on, settings } => machine.set_issues(&project, on, settings).await,
     };
     done.map(|_| None).map_err(err)
 }

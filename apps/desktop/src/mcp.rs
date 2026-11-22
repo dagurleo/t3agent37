@@ -71,7 +71,12 @@ enum Call {
     SleepMachine { machine: String },
     ResizeMachine { machine: String, size: String },
     KeepAwake { machine: String, minutes: u32 },
-    SignInAgent { machine: String, agent: String },
+    SignInAgent {
+        machine: String,
+        agent: String,
+        #[serde(default, rename = "anotherAccount")]
+        another_account: bool,
+    },
     TurnOnConnect { machine: String },
     WakeLink {
         machine: String,
@@ -92,6 +97,14 @@ enum Call {
         port: u16,
         #[serde(default)]
         open: bool,
+    },
+    GithubIssues {
+        machine: String,
+        project: String,
+        on: bool,
+        label: Option<String>,
+        model: Option<String>,
+        effort: Option<String>,
     },
 }
 
@@ -192,7 +205,8 @@ fn tool_list() -> Value {
             "list_machines",
             "Lists the user's t3agent37 machines with id, size, state (working | idle | asleep | waking | \
              sleeping | creating | error | missing | unknown (still checking)) and a detail line, agents that still need a sign-in \
-             there (signedOut), its T3 projects (with progress while one is being added), plus Agent37 \
+             there (signedOut) and the coding agents signed in (signedIn), its T3 projects (with progress while one is being added, and the label \
+             and agent of those whose GitHub issues it works on), plus Agent37 \
              costs today and this month (UTC) and the wallet balance left.",
             json!({}),
             &[],
@@ -267,10 +281,15 @@ fn tool_list() -> Value {
              GitHub (agent GitHub: needed to clone private repos and push). Opens the sign-in page in the \
              user's browser on this computer; the user must approve it there (for GitHub, by entering the \
              code t3agent37 shows and copies), so tell them to. The credential is created on the machine; \
-             this computer's logins are not touched.",
+             this computer's logins are not touched. Each machine has its own sign-ins, so machines can use \
+             different accounts (say, a different Claude subscription each). anotherAccount: true opens the \
+             page in a private browser window, so the user can sign in with an account other than the one \
+             their browser uses; on a machine already signed in, that switches its account once the user \
+             finishes (left unfinished, the old sign-in stays).",
             json!({
                 "machine": machine,
                 "agent": { "type": "string", "enum": ["Claude", "Codex", "GitHub"] },
+                "anotherAccount": { "type": "boolean", "description": "Sign in with another account than the browser's (private window); switches an existing sign-in" },
             }),
             &["machine", "agent"],
         ),
@@ -309,9 +328,31 @@ fn tool_list() -> Value {
             &["machine", "port"],
         ),
         tool(
+            "github_issues",
+            "Turns GitHub issue work on or off for one of a machine's projects (its title or id, as \
+             list_machines shows them; `issues` has the settings of those that are on). On: a webhook \
+             on the project's GitHub repo sends its issues to the machine, and an issue that someone \
+             who can push there gives the project's label becomes a T3 thread on the machine, with \
+             the project's agent, in its own worktree and branch, that opens a pull request. A \
+             delivery wakes a sleeping machine. The label and the agent are kept as they are unless \
+             given; the first time, `agent` and Claude Opus 5.5 at high effort. Calling it again \
+             with on: true changes them. Needs GitHub signed in on the machine, with admin rights \
+             on the repo. Wakes the machine.",
+            json!({
+                "machine": machine,
+                "project": { "type": "string", "description": "A project on the machine: title or id" },
+                "on": { "type": "boolean" },
+                "label": { "type": "string", "description": "The GitHub label that hands an issue over; made in the repo if missing" },
+                "model": { "type": "string", "description": "A model of the machine's signed-in agents, by slug or name (claude-opus-5-5, sonnet)" },
+                "effort": { "type": "string", "description": "How hard it thinks, as T3 offers for that model (low, medium, high, xhigh, max)" },
+            }),
+            &["machine", "project", "on"],
+        ),
+        tool(
             "machine_details",
             "One machine's cost today and this month, time awake today, which agents are signed in \
-             there, its T3 version and creation time, whether T3 Connect is on, the servers T3 saw \
+             there and as whom (email and plan; for Claude and Codex also the plan's usage limits, \
+             usedPercent per window, as last checked; GitHub's login), its T3 version and creation time, whether T3 Connect is on, the servers T3 saw \
              listening there (servers) and its ports forwarded to this computer (previews). Never wakes it.",
             json!({ "machine": machine }),
             &["machine"],
@@ -356,9 +397,10 @@ impl Call {
                 "Creating {name}, about a minute. list_machines shows its progress. When it is ready, \
                  T3 Code asks the user to add it as a backend."
             ),
-            Self::SignInAgent { machine, agent } => format!(
+            Self::SignInAgent { machine, agent, .. } => format!(
                 "The {agent} sign-in for {machine} is open in the browser; the user must click Authorize. \
-                 list_machines stops listing {agent} under signedOut once done."
+                 Once done, list_machines stops listing {agent} under signedOut, and machine_details shows \
+                 the account it's signed in as."
             ),
             Self::AddProject { machine, project } => format!(
                 "Still cloning {project} onto {machine}; list_machines shows its progress under the machine's projects."
@@ -430,15 +472,22 @@ async fn run(app: &Arc<App>, call: Call) -> Result<String> {
             m.resize(&size).await?;
             format!("{} is set to {size}; it applies when it next wakes (right away if it was idle).", m.record().name)
         }
-        Call::SignInAgent { machine, agent } => {
+        Call::SignInAgent { machine, agent, another_account } => {
             let m = app.machine(&machine)?;
             if agent == crate::app::GITHUB {
-                m.sign_in_github().await?;
+                m.sign_in_github(another_account).await?;
             } else {
                 let a = Agent::from_name(&agent).ok_or_else(|| anyhow!("agent must be Claude, Codex or GitHub"))?;
-                m.sign_in(a).await?;
+                m.sign_in(a, another_account).await?;
             }
-            format!("{agent} is signed in on {}.", m.record().name)
+            let who = app.details(&machine).ok().and_then(|d| {
+                let a = d.agents.into_iter().find(|a| a.name == agent)?;
+                a.account.email.or(a.login.map(|l| format!("@{l}")))
+            });
+            match who {
+                Some(who) => format!("{agent} is signed in on {} as {who}.", m.record().name),
+                None => format!("{agent} is signed in on {}.", m.record().name),
+            }
         }
         Call::TurnOnConnect { machine } => {
             let m = app.machine(&machine)?;
@@ -474,6 +523,32 @@ async fn run(app: &Arc<App>, call: Call) -> Result<String> {
             m.ensure_awake().await?;
             let url = app.open_port(&m, port, open).await?;
             format!("Port {port} on {} is at {url} on this computer.", m.record().name)
+        }
+        Call::GithubIssues { machine, project, on, label, model, effort } => {
+            let m = app.machine(&machine)?;
+            let name = m.record().name;
+            let p = m
+                .projects()
+                .into_iter()
+                .find(|p| p.id == project || p.title.eq_ignore_ascii_case(&project))
+                .ok_or_else(|| anyhow!("{name} has no project {project}"))?;
+            let models = m.issue_models();
+            let settings = if on {
+                Some(p.issues.clone().unwrap_or_default().with(&models, label.as_deref(), model.as_deref(), effort.as_deref())?)
+            } else {
+                None
+            };
+            m.set_issues(&p.id, on, settings.clone()).await?;
+            if let Some(s) = settings {
+                format!(
+                    "{name} now works on {}'s GitHub issues with {}: label one `{}` and it starts a thread there that opens a pull request.",
+                    p.title,
+                    s.agent(&models),
+                    s.label
+                )
+            } else {
+                format!("{name} no longer works on {}'s GitHub issues; its webhook is gone.", p.title)
+            }
         }
         Call::DeleteMachine { machine, discard } => {
             let m = app.machine(&machine)?;
@@ -609,7 +684,7 @@ mod tests {
     async fn lists_tools_and_rejects_unknown_methods() {
         let tools = rpc("tools/list", json!({})).await["result"]["tools"].clone();
         let names: Vec<&str> = tools.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names.len(), 17);
+        assert_eq!(names.len(), 18);
         assert!(names.contains(&"sign_in_agent") && names.contains(&"delete_machine") && names.contains(&"wake_link"));
         assert_eq!(rpc("ping", json!({})).await["result"], json!({}));
         assert_eq!(rpc("resources/list", json!({})).await["error"]["code"], -32601);

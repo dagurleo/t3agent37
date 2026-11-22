@@ -6,6 +6,7 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use t3agent37_lib::app::MachineView;
+use t3agent37_lib::machine::provision::SizeInfo;
 use t3agent37_lib::projects::Project;
 
 use super::details::sub_header;
@@ -106,24 +107,9 @@ impl Panel {
 
         let mut sizes = div().grid().grid_cols(3).gap(px(8.));
         for s in self.state.sizes {
-            let on = s.id == size;
             let id = s.id;
-            let frame = tk.frame;
             sizes = sizes.child(
-                div()
-                    .id(SharedString::from(format!("size-{id}")))
-                    .flex()
-                    .flex_col()
-                    .gap(px(3.))
-                    .pt(px(10.))
-                    .px(px(10.))
-                    .pb(px(9.))
-                    .border_1()
-                    .cursor_pointer()
-                    .map(|d| if on { d.bg(tk.panel).border_color(tk.accent_text).shadow(vec![inset_ring(tk.accent_text)]) } else { d.border_color(tk.line).hover(move |s| s.border_color(frame)) })
-                    .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(capitalized(s.id)))
-                    .child(div().font_family(MONO).text_size(px(10.)).line_height(relative(1.3)).text_color(tk.muted).child(s.spec))
-                    .child(div().mt(px(4.)).font_family(MONO).font_weight(FontWeight::MEDIUM).text_size(px(11.)).text_color(tk.accent_text).child(model::hourly(s.hourly)))
+                size_card(SharedString::from(format!("size-{id}")), s, s.id == size, &tk)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(f) = &mut this.new_form {
                             f.size = id.into();
@@ -492,6 +478,26 @@ fn field(label: &'static str, tk: &Tokens) -> Div {
 
 fn pick_note(tk: &Tokens) -> Div {
     kit::caption(tk).flex().flex_col().items_start().gap(px(6.)).px(px(10.)).py(px(12.)).line_height(relative(1.45))
+}
+
+/// One machine size as a card: name, spec and price, framed in the accent when `on`. The new
+/// machine form and the details' resize both pick from these, three to a row.
+pub(super) fn size_card(id: impl Into<ElementId>, s: &SizeInfo, on: bool, tk: &Tokens) -> Stateful<Div> {
+    let frame = tk.frame;
+    div()
+        .id(id)
+        .flex()
+        .flex_col()
+        .gap(px(3.))
+        .pt(px(10.))
+        .px(px(10.))
+        .pb(px(9.))
+        .border_1()
+        .cursor_pointer()
+        .map(|d| if on { d.bg(tk.panel).border_color(tk.accent_text).shadow(vec![inset_ring(tk.accent_text)]) } else { d.border_color(tk.line).hover(move |s| s.border_color(frame)) })
+        .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(capitalized(s.id)))
+        .child(div().font_family(MONO).text_size(px(10.)).line_height(relative(1.3)).text_color(tk.muted).child(s.spec))
+        .child(div().mt(px(4.)).font_family(MONO).font_weight(FontWeight::MEDIUM).text_size(px(11.)).text_color(tk.accent_text).child(model::hourly(s.hourly)))
 }
 
 /// `box-shadow: inset 0 0 0 1px`: the second pixel of a focused frame.

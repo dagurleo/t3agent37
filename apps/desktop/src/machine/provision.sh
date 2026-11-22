@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs on an Agent37 VM (agent37-ubuntu) as root. Idempotent; also used to upgrade a machine.
 #   T3A37_SECRET=<watchdog-secret> provision.sh <t3-version> <sleep-after-secs> <heartbeat-url> <mint-upstream-token:0|1> <name>
-# Expects watchdog.mjs next to it. Prints one JSON line: {"environmentId", "upstreamToken"?}.
+# Expects watchdog.mjs and issues.mjs next to it. Prints one JSON line:
+# {"environmentId", "t3Version" (what runs: the one asked for, or a newer one found), "upstreamToken"?}.
 #
 # Only $HOME (/root) is the machine's billed, persistent disk, so everything lives there.
 #
@@ -25,14 +26,76 @@ export PATH="$bin:$PATH"
 
 # T3 server pinned to the desktop app's version. It is restarted only when something it runs
 # on changed: a restart drops every T3 Code connection.
+#
+# T3's service launcher runs it, as `t3 up` has systemd run it elsewhere, so that T3 Code's own
+# update ("Update N machines?") updates the machine as well. The launcher starts the version that
+# service-state.json selects, with service.env's settings. An update swaps the server in place and
+# selects the new version, or rolls back if the new one doesn't start: one under way finishes
+# before anything here touches T3.
+state="$HOME/.t3/runtime/service-state.json"
+for _ in $(seq 1 360); do
+  grep -qsE '"status": *"pending"' "$state" || break
+  sleep 0.5
+done
 restart_t3=0
-if [ "$("$t3" --version 2>/dev/null || true)" != "t3 v$version" ]; then
+# Never back, though: T3 Code's update may have taken the machine past the version asked for, and
+# T3's database doesn't go back with it (T3 refuses remote downgrades too).
+installed="$("$t3" --version 2>/dev/null | sed -n 's/^t3 v//p' || true)"
+if [ -n "$installed" ] && node -e '
+  const parse = (v) => { const [core, pre] = v.split("+")[0].split(/-(.*)/s);
+    return { core: core.split(".").map(Number), pre: pre ? pre.split(".") : [] }; };
+  const cmp = (x, y) => { const a = parse(x), b = parse(y);
+    for (let i = 0; i < 3; i++) if (a.core[i] !== b.core[i]) return a.core[i] < b.core[i] ? -1 : 1;
+    if (!a.pre.length || !b.pre.length) return b.pre.length - a.pre.length;
+    for (let i = 0; i < Math.max(a.pre.length, b.pre.length); i++) {
+      const p = a.pre[i], q = b.pre[i];
+      if (p === q) continue;
+      if (p === undefined || q === undefined) return p === undefined ? -1 : 1;
+      const pn = /^\d+$/.test(p), qn = /^\d+$/.test(q);
+      if (pn && qn) return Number(p) < Number(q) ? -1 : 1;
+      if (pn !== qn) return pn ? -1 : 1;
+      return p < q ? -1 : 1;
+    }
+    return 0; };
+  process.exit(cmp(process.argv[1], process.argv[2]) > 0 ? 0 : 1);
+' "$installed" "$version"; then
+  version="$installed"
+fi
+if [ "$installed" != "$version" ]; then
   if ! curl -fsSL https://t3.codes/install.sh | T3CODE_VERSION="$version" sh >"$dir/install.log" 2>&1; then
     echo "T3 install failed" >&2
     tail -n 40 "$dir/install.log" >&2
     exit 1
   fi
   restart_t3=1
+fi
+changed() { # file content: writes content to file when it differs, and prints 1 if it did
+  if [ "$(cat "$1" 2>/dev/null || true)" = "$2" ]; then echo 0; else printf '%s\n' "$2" >"$1"; echo 1; fi
+}
+# boot.sh reads the mode. Releases without the launcher (it is in 0.1.10 and later), or whose
+# launcher didn't start the server here (below), run as plain `t3 serve`.
+mode=serve
+if grep -aqF __service-launcher "$HOME/.t3/runtime/versions/$version/t3" 2>/dev/null \
+  && [ "$(cat "$dir/t3-launcher-failed" 2>/dev/null || true)" != "$version" ]; then
+  mode=launcher
+fi
+[ "$(changed "$dir/t3-mode" "$mode")" = 0 ] || restart_t3=1
+if [ "$mode" = launcher ]; then
+  # A state that selects this version stays, with its update's record; any other is replaced.
+  mkdir -p "$(dirname "$state")"
+  [ "$(V="$version" node -e '
+    const fs = require("fs"), f = process.argv[1], v = process.env.V;
+    let s; try { s = JSON.parse(fs.readFileSync(f, "utf8")); } catch {}
+    if (s?.activeVersion === v) { process.stdout.write("0"); process.exit(0); }
+    fs.writeFileSync(f, JSON.stringify({ protocol: 4, activeVersion: v }, null, 2) + "\n", { mode: 0o600 });
+    process.stdout.write("1");
+  ' "$state")" = 0 ] || restart_t3=1
+  # An explicit host wins over T3CODE_LAN, which T3 Connect's sign-in (`t3 up`) writes here too.
+  env_file="$HOME/.t3/service.env"
+  [ "$(changed "$env_file" "$(
+    grep -vsE '^(T3CODE_HOST|T3CODE_PORT|T3CODE_NO_BROWSER)=' "$env_file" || true
+    printf 'T3CODE_HOST=0.0.0.0\nT3CODE_PORT=3773\nT3CODE_NO_BROWSER=true'
+  )")" = 0 ] || restart_t3=1
 fi
 settings="$HOME/.t3/userdata/settings.json"
 before="$(cat "$settings" 2>/dev/null || true)"
@@ -65,6 +128,18 @@ PROFILE
 if [ ! -x "$bin/claude" ]; then
   curl -fsSL https://claude.ai/install.sh | bash >"$dir/claude-install.log" 2>&1 || echo "Claude Code install failed" >&2
 fi
+# Claude Code signs what it commits and opens ("Co-Authored-By: Claude", "Generated with Claude
+# Code") unless told not to. Off here, unless the machine's settings already say either way; a
+# settings file that doesn't parse is left alone.
+mkdir -p "$HOME/.claude"
+node -e '
+  const fs = require("fs"), f = process.argv[1];
+  let s = {};
+  try { s = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) { if (e.code !== "ENOENT") process.exit(0); }
+  if ("attribution" in s || "includeCoAuthoredBy" in s) process.exit(0);
+  s.attribution = { commit: "", pr: "", sessionUrl: false };
+  fs.writeFileSync(f, JSON.stringify(s, null, 2) + "\n");
+' "$HOME/.claude/settings.json"
 if [ ! -x "$bin/codex" ]; then
   tmp="$(mktemp -d)"
   if curl -fsSL -o "$tmp/codex.tar.gz" https://github.com/openai/codex/releases/latest/download/codex-x86_64-unknown-linux-musl.tar.gz \
@@ -107,6 +182,8 @@ install_if_changed() { # src dest mode: prints 1 when it changed dest
   if cmp -s "$1" "$2"; then echo 0; else install -m "$3" "$1" "$2"; echo 1; fi
 }
 restart_watchdog="$(install_if_changed "$here/watchdog.mjs" "$dir/watchdog.mjs" 600)"
+# The GitHub inbox, which the watchdog runs; t3agent37 also runs it as a command.
+[ "$(install_if_changed "$here/issues.mjs" "$dir/issues.mjs" 600)" = 0 ] || restart_watchdog=1
 
 cat >"$dir/boot.sh.new" <<'BOOT'
 #!/bin/bash
@@ -137,7 +214,12 @@ run() {
   done
 }
 cd /root
-run t3 /root/.local/bin/t3 serve --host 0.0.0.0 --port 3773 --no-browser &
+# The mode provision.sh chose: T3's service launcher, which runs `t3 serve` with service.env's
+# settings and swaps it for T3 Code's updates, or `t3 serve` directly.
+run t3 /bin/bash -c 'if [ "$(cat /root/.t3agent37/t3-mode 2>/dev/null)" = launcher ]; then
+  T3CODE_HOME=/root/.t3 exec /root/.local/bin/t3 __service-launcher
+fi
+exec /root/.local/bin/t3 serve --host 0.0.0.0 --port 3773 --no-browser' &
 run watchdog node --no-warnings "$dir/watchdog.mjs" &
 wait
 BOOT
@@ -196,14 +278,27 @@ restart() { # name: kills its process group and waits for boot.sh to start a new
 
 wait_t3() {
   for _ in $(seq 1 240); do
-    if curl -sf -o /dev/null http://127.0.0.1:3773/.well-known/t3/environment; then return 0; fi
+    if curl -sf -m 5 -o /dev/null http://127.0.0.1:3773/.well-known/t3/environment; then return 0; fi
     sleep 0.5
   done
-  echo "T3 server did not start" >&2
-  tail -n 40 "$dir/t3.log" >&2 || true
   return 1
 }
-wait_t3
+if ! wait_t3; then
+  if [ "$mode" = launcher ] && tail -n 40 "$dir/t3.log" 2>/dev/null | grep -qF '[service-launcher]'; then
+    # This release's launcher refused to start T3 here (a newer state format, say): it runs
+    # directly instead, as before the launcher, until another release comes.
+    echo "T3's service launcher did not start T3; running it directly" >&2
+    printf '%s\n' "$version" >"$dir/t3-launcher-failed"
+    echo serve >"$dir/t3-mode"
+    restart t3
+    wait_t3 || true
+  fi
+  if ! curl -sf -m 5 -o /dev/null http://127.0.0.1:3773/.well-known/t3/environment; then
+    echo "T3 server did not start" >&2
+    tail -n 40 "$dir/t3.log" >&2 || true
+    exit 1
+  fi
+fi
 
 if [ -z "$watchdog_token" ]; then
   watchdog_token="$("$t3" auth session issue --token-only --ttl 3650d --label t3agent37-watchdog --scope orchestration:read)"
@@ -215,9 +310,9 @@ upstream_token=""
 if [ "$mint_upstream" = 1 ]; then
   upstream_token="$("$t3" auth session issue --token-only --ttl 3650d --label t3agent37)"
 fi
-environment_id="$(curl -sf http://127.0.0.1:3773/.well-known/t3/environment | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).environmentId))')"
-ENV_ID="$environment_id" TOK="$upstream_token" node -e '
-  const o = { environmentId: process.env.ENV_ID };
+environment_id="$(curl -sf -m 5 http://127.0.0.1:3773/.well-known/t3/environment | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).environmentId))')"
+ENV_ID="$environment_id" TOK="$upstream_token" V="$version" node -e '
+  const o = { environmentId: process.env.ENV_ID, t3Version: process.env.V };
   if (process.env.TOK) o.upstreamToken = process.env.TOK;
   console.log(JSON.stringify(o));
 '

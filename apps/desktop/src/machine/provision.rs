@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 const PROVISION_SH: &str = include_str!("provision.sh");
 const WATCHDOG_MJS: &str = include_str!("watchdog.mjs");
+const ISSUES_MJS: &str = include_str!("issues.mjs");
 pub const T3_PORT: u16 = 3773;
 pub const WATCHDOG_PORT: u16 = 3774;
 /// The watchdog answers its own heartbeat here, through a public URL: that traffic is what keeps
@@ -18,10 +19,14 @@ pub const HEARTBEAT_PORT: u16 = 3775;
 /// The wake link's port: a public URL of its own (so replacing it leaves the heartbeat alone)
 /// that a phone opens to wake the machine. The watchdog answers it with a page and nothing else.
 pub const WAKE_PORT: u16 = 3776;
+/// The GitHub inbox's port (`issues.mjs`, in the watchdog): a public URL of its own, made when the
+/// first repo's issues are turned on, that GitHub's webhooks deliver to.
+pub const INBOX_PORT: u16 = 3777;
 
 /// Identifies the provisioning scripts; a machine provisioned with others gets them on wake.
 pub fn revision() -> String {
-    let hash = fnv1a(PROVISION_SH.bytes().chain(WATCHDOG_MJS.bytes()).chain(SLEEP_AFTER_SECS.to_string().bytes()));
+    let scripts = PROVISION_SH.bytes().chain(WATCHDOG_MJS.bytes()).chain(ISSUES_MJS.bytes());
+    let hash = fnv1a(scripts.chain(SLEEP_AFTER_SECS.to_string().bytes()));
     format!("{hash:016x}")
 }
 
@@ -34,7 +39,51 @@ pub fn fnv1a(bytes: impl IntoIterator<Item = u8>) -> u64 {
 #[serde(rename_all = "camelCase")]
 pub struct Provisioned {
     pub environment_id: String,
+    /// The T3 version left running: the one asked for, or a newer one that T3 Code's own update
+    /// put there (provision.sh never takes a machine back). Older scripts didn't say.
+    pub t3_version: Option<String>,
     pub upstream_token: Option<String>,
+}
+
+/// Orders T3 versions as semver does: `0.1.12-nightly.20261121.5038` after `0.1.11` and before
+/// `0.1.12`. One that doesn't parse (none recorded, say) comes before any that does.
+pub fn cmp_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering::*;
+    fn parse(v: &str) -> Option<([u64; 3], Vec<&str>)> {
+        let v = v.split('+').next()?;
+        let (core, pre) = match v.split_once('-') {
+            Some((core, pre)) => (core, pre.split('.').collect()),
+            None => (v, Vec::new()),
+        };
+        let mut n = core.split('.').map(|n| n.parse::<u64>().ok());
+        let core = [n.next()??, n.next()??, n.next()??];
+        n.next().is_none().then_some((core, pre))
+    }
+    match (parse(a), parse(b)) {
+        (None, None) => Equal,
+        (None, Some(_)) => Less,
+        (Some(_), None) => Greater,
+        (Some((a_core, a_pre)), Some((b_core, b_pre))) => a_core.cmp(&b_core).then_with(|| {
+            match (a_pre.is_empty(), b_pre.is_empty()) {
+                (true, true) => return Equal,
+                (true, false) => return Greater,
+                (false, true) => return Less,
+                (false, false) => {}
+            }
+            for (x, y) in a_pre.iter().zip(&b_pre) {
+                let order = match (x.parse::<u64>(), y.parse::<u64>()) {
+                    (Ok(x), Ok(y)) => x.cmp(&y),
+                    (Ok(_), Err(_)) => Less,
+                    (Err(_), Ok(_)) => Greater,
+                    (Err(_), Err(_)) => x.cmp(y),
+                };
+                if order != Equal {
+                    return order;
+                }
+            }
+            a_pre.len().cmp(&b_pre.len())
+        }),
+    }
 }
 
 /// Machine sizes: Agent37's VM shapes. `hourly` is compute while awake (Agent37's monthly VM
@@ -99,9 +148,11 @@ pub async fn run(
     let script = format!(
         "set -e; d=$(mktemp -d); trap 'rm -rf \"$d\"' EXIT\n\
          echo {p} | base64 -d > \"$d/provision.sh\"; echo {w} | base64 -d > \"$d/watchdog.mjs\"\n\
+         echo {i} | base64 -d > \"$d/issues.mjs\"\n\
          T3A37_SECRET={s} bash \"$d/provision.sh\" {v} {sleep} {hb} {mint} {name}\n",
         p = b64(PROVISION_SH),
         w = b64(WATCHDOG_MJS),
+        i = b64(ISSUES_MJS),
         v = shell_word(t3_version)?,
         s = shell_word(watchdog_secret)?,
         sleep = SLEEP_AFTER_SECS,
@@ -154,6 +205,16 @@ pub async fn wake_url(a37: &Agent37, instance: &str, renew: bool) -> Result<Stri
     a37.add_public_port(instance, WAKE_PORT, "t3agent37 wake link").await
 }
 
+/// The GitHub inbox's public URL, made on first use. Its random hostname isn't what guards it:
+/// the inbox acts only on deliveries signed with a webhook's secret.
+pub async fn inbox_url(a37: &Agent37, instance: &str) -> Result<String> {
+    let found = a37.get(instance).await?.ok_or_else(|| anyhow!("the machine no longer exists on Agent37"))?;
+    match found.public_ports.iter().find(|p| p.port == INBOX_PORT) {
+        Some(p) => Ok(p.url.clone()),
+        None => a37.add_public_port(instance, INBOX_PORT, "t3agent37 GitHub inbox").await,
+    }
+}
+
 /// Creates a new machine end to end. Takes about a minute, most of it the installs.
 /// On failure after `created`, the caller deletes the instance.
 pub async fn create(
@@ -194,7 +255,7 @@ pub async fn create(
         watchdog_secret: secret,
         heartbeat_url: heartbeat,
         local_port,
-        t3_version: t3_version.to_owned(),
+        t3_version: provisioned.t3_version.unwrap_or_else(|| t3_version.to_owned()),
         provision_revision: revision(),
         environment_id: provisioned.environment_id,
         client_tokens: Vec::new(),
@@ -207,5 +268,34 @@ pub async fn create(
         connect_approval: None,
         connect_push: None,
         previews: Vec::new(),
+        issues: Vec::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cmp_versions;
+    use std::cmp::Ordering::*;
+
+    #[test]
+    fn versions_order_as_semver() {
+        let ordered = [
+            "",
+            "0.1.10",
+            "0.1.11",
+            "0.1.12-nightly.20261120.4994",
+            "0.1.12-nightly.20261121.5038",
+            "0.1.12-nightly.20261121.10000",
+            "0.1.12-preview.20261111.4547",
+            "0.1.12",
+            "0.2.0",
+        ];
+        for (i, a) in ordered.iter().enumerate() {
+            for (j, b) in ordered.iter().enumerate() {
+                assert_eq!(cmp_versions(a, b), i.cmp(&j), "{a} vs {b}");
+            }
+        }
+        assert_eq!(cmp_versions("0.1.12+build.1", "0.1.12"), Equal);
+        assert_eq!(cmp_versions("not a version", "0.0.1"), Less);
+    }
 }

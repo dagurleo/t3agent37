@@ -7,6 +7,8 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use t3agent37_lib::app::{GITHUB, MachineState as State, MachineView};
+use t3agent37_lib::machine::issues::{self, IssueSettings, ModelChoice};
+use t3agent37_lib::machine::projects::MachineProject;
 
 use super::kit::{self, Btn, Icon, Size};
 use super::Panel;
@@ -37,7 +39,7 @@ impl Panel {
             body.push(self.previews(m, d.as_ref(), pending, &tk, window, cx).into_any_element());
         }
         if !(gone && m.projects.is_empty()) {
-            body.push(self.projects(m, &tk, window, cx).into_any_element());
+            body.push(self.projects(m, pending, &tk, window, cx).into_any_element());
         }
         body.push(self.more(m, busy, &tk, cx).into_any_element());
         body.push(
@@ -357,34 +359,105 @@ impl Panel {
         let t = self.t();
         let items: Vec<AnyElement> = match d {
             None => skeleton_lines(2, t, &tk),
-            Some(d) => d
-                .agents
-                .iter()
-                .flat_map(|(name, signed_in)| {
-                    let right: AnyElement = if *signed_in {
-                        kit::ok("signed in", &tk).into_any_element()
-                    } else if m.signed_out.contains(name) {
-                        let action = model::sign_in_to(name);
-                        let running = self.signing_in.as_deref() == Some(name.as_str()) && pending == Some(action.busy);
-                        let disabled = pending.is_some() || m.state == State::Missing;
-                        let (m, name2) = (m.clone(), name.clone());
-                        kit::button(SharedString::from(format!("signin-{name}")), Btn::Outline, Size::Sm, disabled && !running, &tk)
-                            .map(|b| if running { b.child(kit::dots(t, tk.accent_text)).child("Signing in…") } else { b.child("Sign in") })
-                            .when(!disabled, |b| {
-                                b.on_click(cx.listener(move |this, _, _, cx| {
-                                    this.signing_in = Some(name2.clone());
-                                    this.track(&m, action.clone(), cx);
-                                }))
-                            })
-                            .into_any_element()
+            Some(d) => {
+                // A cancel is over once nothing runs (one started by an agent has no `track`).
+                if m.signing_in.is_none() && pending.is_none() {
+                    self.canceled_sign_in.remove(&machine_key(m));
+                }
+                let now = model::now_ms() as i64;
+                let disabled = pending.is_some() || m.state == State::Missing;
+                let mut items: Vec<AnyElement> = d
+                    .agents
+                    .iter()
+                    .flat_map(|a| {
+                        let name = &a.name;
+                        // Its sign-in runs: as the machine says, or as just clicked here.
+                        let mine = m.signing_in.as_deref() == Some(name.as_str())
+                            || (self.signing_in.as_deref() == Some(name.as_str()) && pending.is_some_and(|p| p == model::SWITCHING || p == model::sign_in_to(name).busy));
+                        let canceling = self.canceled_sign_in.contains(&machine_key(m));
+                        let right: AnyElement = if mine {
+                            // "Switching account…  Cancel": the old sign-in stays if it's canceled.
+                            let (m2, label) = (m.clone(), if a.signed_in { model::SWITCHING } else { "Signing in…" });
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .font_family(MONO)
+                                        .text_size(px(11.))
+                                        .text_color(tk.accent_text)
+                                        .child(kit::dots(t, tk.accent_text))
+                                        .child(if canceling { "Canceling…" } else { label }),
+                                )
+                                .when(!canceling, |r| {
+                                    r.child(
+                                        kit::link(SharedString::from(format!("cancel-signin-{name}")), "Cancel", false, &tk)
+                                            .text_size(px(11.5))
+                                            .on_click(cx.listener(move |this, _, _, cx| this.cancel_sign_in(&m2, cx))),
+                                    )
+                                })
+                                .into_any_element()
+                        } else if a.signed_in {
+                            kit::link(SharedString::from(format!("switch-{name}")), "Switch account", disabled, &tk)
+                                .text_size(px(11.5))
+                                .when(!disabled, |l| l.on_click(start_sign_in(m, name, model::switch_account(name), cx)))
+                                .into_any_element()
+                        } else if m.signed_out.contains(name) {
+                            let (action, another) = (model::sign_in_to(name), model::sign_in_another(name));
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(
+                                    kit::link(SharedString::from(format!("another-{name}")), "Other account", disabled, &tk)
+                                        .text_size(px(11.5))
+                                        .when(!disabled, |l| l.on_click(start_sign_in(m, name, another, cx))),
+                                )
+                                .child(
+                                    kit::button(SharedString::from(format!("signin-{name}")), Btn::Outline, Size::Sm, disabled, &tk)
+                                        .child("Sign in")
+                                        .when(!disabled, |b| b.on_click(start_sign_in(m, name, action, cx))),
+                                )
+                                .into_any_element()
+                        } else {
+                            kit::caption(&tk).child("signed out").into_any_element()
+                        };
+                        // Who it's signed in as, and the plan's limits, under its name.
+                        let who = a.signed_in.then(|| model::account_line(a)).flatten();
+                        let usage = a.signed_in.then(|| model::usage_line(&a.account, now)).flatten();
+                        let high = model::usage_high(&a.account, now);
+                        let left = div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .gap(px(3.))
+                            .py(px(7.))
+                            .child(kit::agent_name(name, 13., tk.fg))
+                            .when(a.signed_in && who.is_none(), |c| c.child(kit::ok("signed in", &tk)))
+                            .children(who.map(|w| kit::caption(&tk).truncate().child(w)))
+                            .children(usage.map(|u| kit::caption(&tk).when(high, |c| c.text_color(tk.accent_text)).child(u)));
+                        let line = kit::line().child(left).child(right).into_any_element();
+                        let code = (name == GITHUB).then(|| m.github_code.clone()).flatten();
+                        std::iter::once(line).chain(code.map(|code| github_code(code, &tk, cx).into_any_element()))
+                    })
+                    .collect();
+                if !items.is_empty() {
+                    let how = if t3agent37_lib::app::private_window_available() {
+                        "Other account and Switch account sign in from a private browser window."
                     } else {
-                        kit::caption(&tk).child("signed out").into_any_element()
+                        "For Other account and Switch account, sign in on the page with the account this machine should use."
                     };
-                    let line = kit::line().child(div().flex_1().min_w_0().child(kit::agent_name(name, 13., tk.fg))).child(right).into_any_element();
-                    let code = (name == GITHUB).then(|| m.github_code.clone()).flatten();
-                    std::iter::once(line).chain(code.map(|code| github_code(code, &tk, cx).into_any_element()))
-                })
-                .collect(),
+                    items.push(line_note(&tk).child(format!("Sign-ins are per machine, so each can use its own account. {how}")).into_any_element());
+                }
+                items
+            }
         };
         kit::section("agents", None, None, kit::lines(items, &tk), &tk)
     }
@@ -600,34 +673,52 @@ impl Panel {
         kit::section("other devices", None, None, kit::lines(items, &tk), &tk)
     }
 
-    /// Its T3 projects, and adding one the way T3 Code's "Add to another machine" does.
-    fn projects(&mut self, m: &MachineView, tk: &Tokens, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// Its T3 projects, each GitHub one with its issues switch and settings, and adding one the
+    /// way T3 Code's "Add to another machine" does.
+    fn projects(&mut self, m: &MachineView, pending: Option<&'static str>, tk: &Tokens, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let tk = *tk;
         let t = self.t();
         let gone = m.state == State::Missing;
-        let mut items: Vec<AnyElement> = m
-            .projects
-            .iter()
-            .map(|p| {
-                kit::line()
-                    .child(div().flex_1().min_w_0().truncate().child(p.title.clone()))
-                    .when_some(p.status.clone(), |l, status| {
-                        l.child(
-                            kit::caption(&tk)
-                                .flex()
-                                .items_center()
-                                .gap(px(5.))
-                                .max_w(relative(0.6))
-                                .overflow_hidden()
-                                .child(kit::dots(t, tk.muted))
-                                .child(div().min_w_0().truncate().child(status)),
-                        )
-                    })
-                    .into_any_element()
-            })
-            .collect();
+        let busy = pending.is_some() || gone;
+        let want = self.issues_want.clone();
+        let choices = self.details.as_ref().filter(|d| d.id == m.id).map(|d| d.issue_models.clone()).unwrap_or_default();
+        let on_github = |p: &MachineProject| p.status.is_none() && p.repo_key.as_deref().and_then(issues::github_repo).is_some();
+        let mut items: Vec<AnyElement> = Vec::new();
+        for (i, p) in m.projects.iter().enumerate() {
+            let on = want.as_ref().filter(|(id, _)| *id == p.id).map_or(p.issues.is_some(), |(_, on)| *on);
+            let form_here = self.issues_form.as_ref().is_some_and(|f| f.machine == m.id && f.project == p.id);
+            let line = kit::line()
+                .child(div().flex_1().min_w_0().truncate().child(p.title.clone()))
+                .when_some(p.status.clone(), |l, status| {
+                    l.child(
+                        kit::caption(&tk)
+                            .flex()
+                            .items_center()
+                            .gap(px(5.))
+                            .max_w(relative(0.6))
+                            .overflow_hidden()
+                            .child(kit::dots(t, tk.muted))
+                            .child(div().min_w_0().truncate().child(status)),
+                    )
+                })
+                .when(on_github(p), |l| l.child(issues_switch(p, on, form_here, busy, m, &tk, cx)));
+            let below = match (&self.issues_form, &p.issues) {
+                (Some(form), _) if form_here => Some(issues_form_view(form, m, &choices, busy, &tk, window, cx).into_any_element()),
+                (_, Some(settings)) if on => Some(issues_summary(i, p, settings, &choices, busy, m, &tk, cx).into_any_element()),
+                _ => None,
+            };
+            items.push(div().flex().flex_col().child(line).children(below).into_any_element());
+        }
         if m.projects.is_empty() && !gone {
             items.push(kit::line().child(div().flex_1().text_color(tk.muted).child("Cloned from its git remote, .env files included")).into_any_element());
+        }
+        if m.projects.iter().any(on_github) {
+            let note = if m.projects.iter().any(|p| p.issues.is_some()) {
+                format!("An issue given its project's label becomes a thread on {} that opens a pull request. Only labels from people who can push count.", m.name)
+            } else {
+                format!("Issues: label a GitHub issue and {} works on it and opens a pull request, waking up for it.", m.name)
+            };
+            items.push(line_note(&tk).child(note).into_any_element());
         }
         if !gone {
             let open = self.picker.is_some();
@@ -690,20 +781,15 @@ impl Panel {
         let body = open.then(|| {
             let mut groups = div().flex().flex_col().gap(px(16.)).pt(px(12.));
             if !gone {
-                let mut seg = div().flex().border_1().border_color(tk.frame);
+                let mut seg = div().grid().grid_cols(3).gap(px(8.));
                 for (i, s) in self.state.sizes.iter().enumerate() {
                     let on = s.id == m.size;
                     let m2 = m.clone();
                     let id = s.id;
                     seg = seg.child(
-                        segment(("size", i), i == 0, on, &tk)
-                            .flex_col()
-                            .gap(px(3.))
-                            .py(px(7.))
+                        super::forms::size_card(("size", i), s, on, &tk)
                             .when(busy, |b| b.opacity(0.6))
-                            .child(capitalize(s.id))
-                            .child(div().text_size(px(9.5)).opacity(0.75).child(s.spec))
-                            .child(div().text_size(px(9.5)).opacity(0.75).child(model::hourly(s.hourly)))
+                            .when(busy || on, |b| b.cursor_default())
                             .when(!busy && !on, |b| b.on_click(cx.listener(move |this, _, _, cx| this.track(&m2, model::resize_to(id), cx)))),
                     );
                 }
@@ -831,6 +917,256 @@ fn connect_switch(
         })
 }
 
+/// A project's "issues" switch. Off goes at once (optimistically); on first opens the settings,
+/// and clicking it again while they're open closes them.
+#[allow(clippy::too_many_arguments)]
+fn issues_switch(p: &MachineProject, on: bool, form_open: bool, busy: bool, m: &MachineView, tk: &Tokens, cx: &mut Context<Panel>) -> impl IntoElement + use<> {
+    let (m, p) = (m.clone(), p.clone());
+    div()
+        .id(SharedString::from(format!("issues-{}", p.id)))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(8.))
+        .when(!busy, |s| s.cursor_pointer())
+        .child(kit::caption(tk).child("issues"))
+        .child(kit::switch(SharedString::from(format!("issues-{}-switch", p.id)), on, busy, tk))
+        .when(!busy, |s| {
+            s.on_click(cx.listener(move |this, _, window, cx| {
+                if on {
+                    this.issues_form = None;
+                    this.issues_want = Some((p.id.clone(), false));
+                    this.track(&m, model::issues_off(&p.id), cx);
+                } else if form_open {
+                    this.issues_form = None;
+                    this.focus.focus(window, cx);
+                } else {
+                    this.open_issues_form(&m, &p, window, cx);
+                }
+                cx.notify();
+            }))
+        })
+}
+
+/// Under a project whose issues are on: its label and agent, and "Change".
+#[allow(clippy::too_many_arguments)]
+fn issues_summary(
+    i: usize,
+    p: &MachineProject,
+    settings: &IssueSettings,
+    choices: &[ModelChoice],
+    busy: bool,
+    m: &MachineView,
+    tk: &Tokens,
+    cx: &mut Context<Panel>,
+) -> impl IntoElement + use<> {
+    let (m, p) = (m.clone(), p.clone());
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .pb(px(8.))
+        .child(
+            kit::caption(tk)
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .gap(px(6.))
+                .child(div().flex_none().text_color(tk.accent_text).child(format!("\"{}\"", settings.label)))
+                .child("→")
+                .child(div().min_w_0().truncate().child(settings.agent(choices))),
+        )
+        .child(
+            kit::link(("issues-change", i), "Change", busy, tk)
+                .px_0()
+                .py(px(2.))
+                .text_size(px(11.5))
+                .when(!busy, |l| l.on_click(cx.listener(move |this, _, window, cx| this.open_issues_form(&m, &p, window, cx)))),
+        )
+}
+
+/// The settings a project's issues get: the label, the model, how hard it thinks. Turns
+/// issues on, or saves, which wakes the machine.
+fn issues_form_view(
+    form: &IssuesForm,
+    m: &MachineView,
+    choices: &[ModelChoice],
+    busy: bool,
+    tk: &Tokens,
+    window: &mut Window,
+    cx: &mut Context<Panel>,
+) -> impl IntoElement + use<> {
+    let tk = *tk;
+    let focused = form.label.focus_handle(cx).is_focused(window);
+    let label = div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .h(px(32.))
+        .px(px(10.))
+        .border_1()
+        .border_color(if focused { tk.accent_text } else { tk.frame })
+        .child(div().flex_1().min_w_0().font_family(MONO).text_size(px(12.)).child(Input::new(&form.label).appearance(false).px_0().py_0().h(px(18.))))
+        .child(kit::caption(&tk).child("made on GitHub if new"));
+    let chosen = form.model.as_ref().and_then(|(provider, model)| choices.iter().find(|c| &c.provider == provider && &c.model == model));
+    let mut agent = div().flex().flex_col().gap(px(6.));
+    if choices.is_empty() {
+        agent = agent.child(kit::hint(
+            format!("{}. T3 Code shows t3agent37 {}'s models once it has opened it; then they're here to pick from.", form.current.agent(&[]), m.name),
+            &tk,
+        ));
+    }
+    let mut providers: Vec<&str> = choices.iter().map(|c| c.provider_name.as_str()).collect();
+    providers.dedup();
+    for provider in &providers {
+        let mut row = div().flex().flex_wrap().gap(px(4.));
+        for (i, c) in choices.iter().enumerate().filter(|(_, c)| c.provider_name == *provider) {
+            let picked = chosen.is_some_and(|ch| ch == c);
+            let c2 = c.clone();
+            row = row.child(choice_chip(("issues-model", i), c.short_name().to_owned(), picked, &tk).on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(f) = &mut this.issues_form {
+                    f.level = c2.level(f.level.as_deref());
+                    f.model = Some((c2.provider.clone(), c2.model.clone()));
+                }
+                cx.notify();
+            })));
+        }
+        agent = agent.when(providers.len() > 1, |a| a.child(kit::caption(&tk).child(provider.to_string()))).child(row);
+    }
+    let levels = chosen.and_then(|c| c.effort.as_ref()).map(|effort| {
+        let mut row = div().flex().flex_wrap().gap(px(4.));
+        for (i, (id, name)) in effort.levels.iter().enumerate() {
+            let id2 = id.clone();
+            row = row.child(choice_chip(("issues-level", i), name.clone(), form.level.as_deref() == Some(id), &tk).on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(f) = &mut this.issues_form {
+                    f.level = Some(id2.clone());
+                }
+                cx.notify();
+            })));
+        }
+        field("reasoning", &tk).child(row)
+    });
+    let m2 = m.clone();
+    let actions = div()
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .child(
+            kit::button("issues-submit", Btn::Solid, Size::Sm, busy, &tk)
+                .child(if form.saving { "Save" } else { "Turn on" })
+                .when(!busy, |b| b.on_click(cx.listener(move |this, _, window, cx| this.submit_issues_form(&m2, window, cx)))),
+        )
+        .child(kit::link("issues-cancel", "Cancel", false, &tk).px_0().text_size(px(11.5)).on_click(cx.listener(|this, _, window, cx| {
+            this.issues_form = None;
+            this.focus.focus(window, cx);
+            cx.notify();
+        })))
+        .child(div().flex_1())
+        .child(kit::caption(&tk).child(format!("wakes {}", m.name)));
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(12.))
+        .pt(px(4.))
+        .pb(px(12.))
+        .child(field("label", &tk).child(label))
+        .child(field("agent", &tk).child(agent))
+        .children(levels)
+        .child(actions)
+}
+
+/// One pick among several that wrap: a model, a reasoning level.
+fn choice_chip(id: impl Into<ElementId>, text: String, on: bool, tk: &Tokens) -> Stateful<Div> {
+    let panel = tk.panel;
+    div()
+        .id(id)
+        .flex_none()
+        .px(px(8.))
+        .py(px(5.))
+        .border_1()
+        .border_color(if on { tk.accent } else { tk.frame })
+        .font_family(MONO)
+        .text_size(px(11.5))
+        .line_height(relative(1.))
+        .cursor_pointer()
+        .when(on, |s| s.bg(tk.accent).text_color(tk.accent_fg))
+        .when(!on, |s| s.hover(move |s| s.bg(panel)))
+        .child(text)
+}
+
+/// A caption over its control.
+fn field(label: &'static str, tk: &Tokens) -> Div {
+    div().flex().flex_col().gap(px(6.)).min_w_0().child(kit::caption(tk).child(label))
+}
+
+/// A project's issue settings being picked: before its issues go on, or to change them.
+pub(super) struct IssuesForm {
+    machine: String,
+    project: String,
+    label: Entity<InputState>,
+    /// The model picked (provider, slug), and its reasoning level. `None`: keep `current`'s,
+    /// which the machine didn't list (it hasn't shown its models yet).
+    model: Option<(String, String)>,
+    level: Option<String>,
+    current: IssueSettings,
+    /// Its issues are on already: this saves new settings.
+    saving: bool,
+    _enter: Subscription,
+}
+
+impl Panel {
+    fn open_issues_form(&mut self, m: &MachineView, p: &MachineProject, window: &mut Window, cx: &mut Context<Self>) {
+        let current = p.issues.clone().unwrap_or_default();
+        let choices = self.details.as_ref().filter(|d| d.id == m.id).map(|d| d.issue_models.clone()).unwrap_or_default();
+        let (model, level) = match current.choice(&choices) {
+            Some(c) => (Some((c.provider.clone(), c.model.clone())), c.level(c.effort.as_ref().and_then(|e| current.level(&e.id)))),
+            None => (None, None),
+        };
+        let label = cx.new(|cx| InputState::new(window, cx).default_value(current.label.clone()));
+        let m2 = m.clone();
+        let enter = cx.subscribe_in(&label, window, move |this: &mut Self, _, event: &InputEvent, window, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) && !this.pending.contains_key(&machine_key(&m2)) {
+                this.submit_issues_form(&m2, window, cx);
+            }
+        });
+        label.update(cx, |s, cx| s.focus(window, cx));
+        self.port_input = None;
+        self.issues_form = Some(IssuesForm {
+            machine: m.id.clone(),
+            project: p.id.clone(),
+            label,
+            model,
+            level,
+            current,
+            saving: p.issues.is_some(),
+            _enter: enter,
+        });
+        cx.notify();
+    }
+
+    fn submit_issues_form(&mut self, m: &MachineView, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = &self.issues_form else { return };
+        let label = match issues::check_label(&super::value(&form.label, cx)) {
+            Ok(label) => label,
+            Err(e) => return self.toast(e.to_string(), true, cx),
+        };
+        let choices = self.details.as_ref().filter(|d| d.id == m.id).map(|d| d.issue_models.clone()).unwrap_or_default();
+        let picked = form.model.as_ref().and_then(|(provider, model)| choices.iter().find(|c| &c.provider == provider && &c.model == model));
+        let settings = match picked {
+            Some(c) => c.settings(&label, form.level.as_deref()),
+            None => IssueSettings { label, ..form.current.clone() },
+        };
+        let (project, saving) = (form.project.clone(), form.saving);
+        self.issues_form = None;
+        self.focus.focus(window, cx);
+        if !saving {
+            self.issues_want = Some((project.clone(), true));
+        }
+        self.track(m, model::issues_on(&project, settings, saving), cx);
+        cx.notify();
+    }
+}
+
 /// GitHub's code, for as long as its sign-in waits: shown, so copying something else meanwhile
 /// doesn't lose it.
 fn github_code(code: String, tk: &Tokens, cx: &mut Context<Panel>) -> impl IntoElement + use<> {
@@ -854,6 +1190,15 @@ fn github_code(code: String, tk: &Tokens, cx: &mut Context<Panel>) -> impl IntoE
         )
 }
 
+/// Runs one of an agent's sign-ins, its spinner on the agent's line meanwhile.
+fn start_sign_in(m: &MachineView, name: &str, action: Action, cx: &mut Context<Panel>) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+    let (m, name) = (m.clone(), name.to_owned());
+    cx.listener(move |this, _, _, cx| {
+        this.signing_in = Some(name.clone());
+        this.track(&m, action.clone(), cx);
+    })
+}
+
 /// A sentence about the line above it: wraps instead of cutting off.
 fn line_note(tk: &Tokens) -> Div {
     div().w_full().py(px(7.)).text_size(px(12.)).line_height(relative(1.4)).text_color(tk.muted).flex().flex_col().items_start()
@@ -863,7 +1208,3 @@ fn skeleton_lines(n: usize, t: f64, tk: &Tokens) -> Vec<AnyElement> {
     (0..n).map(|i| kit::line().child(kit::skel(t, relative(0.4 - i as f32 * 0.1), 10., tk)).into_any_element()).collect()
 }
 
-fn capitalize(s: &str) -> String {
-    let mut c = s.chars();
-    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
-}

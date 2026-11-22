@@ -6,6 +6,7 @@ use super::MachineRuntime;
 use crate::agent37::shell_quote;
 use crate::projects::{self, Project};
 use crate::proxy::upstream;
+use crate::store::IssueSettings;
 use anyhow::{bail, Result};
 use base64::Engine;
 use serde::Serialize;
@@ -27,12 +28,16 @@ pub struct MachineProject {
     pub repo_key: Option<String>,
     /// Set while t3boat adds it: how far that is, as T3 Code words clone progress.
     pub status: Option<String>,
+    /// Set when its GitHub issues become threads here (`issues.rs`): the label that hands one
+    /// over, and the agent that works on it.
+    pub issues: Option<IssueSettings>,
 }
 
 impl MachineRuntime {
     /// Its projects as last seen: on the machine when it last ran or slept. Never wakes it.
     pub fn projects(&self) -> Vec<MachineProject> {
         let adding = self.adding.lock().unwrap().clone();
+        let watched = self.record().issues;
         let mut out: Vec<MachineProject> = self
             .projects
             .lock()
@@ -40,6 +45,10 @@ impl MachineRuntime {
             .iter()
             .filter(|p| !adding.iter().any(|a| a.repo_key.is_some() && a.repo_key == p.repo_key))
             .cloned()
+            .map(|mut p| {
+                p.issues = watched.iter().find(|w| w.project_id == p.id).map(|w| w.settings.clone());
+                p
+            })
             .collect();
         out.extend(adding);
         out
@@ -55,6 +64,7 @@ impl MachineRuntime {
                 title: p["title"].as_str().unwrap_or_default().to_owned(),
                 repo_key: projects::repo_key(p),
                 status: None,
+                issues: None,
             })
             .collect();
         *self.projects.lock().unwrap() = projects;
@@ -89,6 +99,7 @@ impl MachineRuntime {
                 title: project.title.clone(),
                 repo_key: Some(project.repo_key.clone()),
                 status: Some("Waking the machine".into()),
+                issues: None,
             });
         }
         self.shared.changed();

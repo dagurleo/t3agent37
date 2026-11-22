@@ -315,18 +315,23 @@ fn codex(color: Rgba) -> Arc<Image> {
 /// A coding agent's name led by its logo, as if part of the word. Keyed by the names the panel
 /// shows: "Claude Code", the backend's "Claude" and "Codex". `color`: the text's.
 pub fn agent_name(name: &str, size: f32, color: Rgba) -> Div {
-    let logo = match name {
-        "Claude" | "Claude Code" => Some(CLAUDE.clone()),
-        "Codex" => Some(codex(color)),
-        _ => None,
-    };
     div()
         .flex()
         .flex_none()
         .items_center()
         .whitespace_nowrap()
-        .children(logo.map(|l| img(l).size(px(size)).mr(px(size * 0.2)).flex_none()))
+        .children(agent_logo(name, size, color).map(|l| l.mr(px(size * 0.2))))
         .child(name.to_string())
+}
+
+/// A coding agent's logo alone, `size` points square; none for an agent without one here.
+pub fn agent_logo(name: &str, size: f32, color: Rgba) -> Option<Img> {
+    let logo = match name {
+        "Claude" | "Claude Code" => CLAUDE.clone(),
+        "Codex" => codex(color),
+        _ => return None,
+    };
+    Some(img(logo).size(px(size)).flex_none())
 }
 
 /// "Claude", "Claude and Codex", "A, B and C", logos included.

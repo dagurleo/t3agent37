@@ -109,7 +109,9 @@ impl Panel {
                     .gap(px(6.))
                     .min_w_0()
                     .child(div().min_w_0().text_size(px(14.)).font_weight(FontWeight(560.)).text_color(name_color).truncate().child(m.name.clone()))
-                    .child(kit::chip(m.size.clone(), &tk)),
+                    .child(kit::chip(m.size.clone(), &tk))
+                    // who's signed in: one logo per coding agent
+                    .children(m.signed_in.iter().filter_map(|a| kit::agent_logo(a, 12., tk.muted))),
             )
             .child(div().mt(px(3.)).font_family(MONO).text_size(px(11.)).line_height(relative(1.3)).text_color(detail_color).truncate().child(detail));
 
@@ -167,8 +169,9 @@ impl Panel {
         if let Some(error) = self.delete_errors.get(&key).cloned() {
             notes.push(self.delete_error_note(m, &error, pending.is_some(), &tk, cx).into_any_element());
         }
-        if !m.id.is_empty() && !m.signed_out.is_empty() {
-            let one = m.signed_out.len() == 1;
+        let ask = model::sign_ins_to_ask(&m.signed_in, &m.signed_out);
+        if !m.id.is_empty() && !ask.is_empty() {
+            let one = ask.len() == 1;
             let mut note = note(&tk).child(
                 div()
                     .flex()
@@ -176,10 +179,10 @@ impl Panel {
                     .min_w_0()
                     .items_center()
                     .overflow_hidden()
-                    .children(kit::agent_names(&m.signed_out, 11., tk.muted))
+                    .children(kit::agent_names(&ask, 11., tk.muted))
                     .child(div().whitespace_nowrap().child(if one { "\u{a0}needs a sign-in" } else { "\u{a0}need a sign-in" })),
             );
-            for agent in &m.signed_out {
+            for agent in &ask {
                 let action = model::sign_in_to(agent);
                 let m2 = m.clone();
                 let label = if one { kit::link(SharedString::from(format!("signin-{key}-{agent}")), "Sign in", pending.is_some(), &tk) } else {

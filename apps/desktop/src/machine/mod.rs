@@ -3,6 +3,7 @@
 
 mod capture;
 mod connect;
+pub mod issues;
 mod link;
 pub mod preview;
 pub mod projects;
@@ -204,14 +205,42 @@ pub struct MachineRuntime {
     adding: Mutex<Vec<projects::MachineProject>>,
     /// GitHub's one-time code while its sign-in waits for it, for the panel to show.
     github_code: Mutex<Option<String>>,
+    /// The agent whose sign-in runs (`signin.rs`), and its cancel: the flag, and a wake for the
+    /// sign-in's wait.
+    pub(super) signing_in: Mutex<Option<String>>,
+    pub(super) sign_in_canceled: std::sync::atomic::AtomicBool,
+    pub(super) sign_in_wake: tokio::sync::Notify,
+    /// The T3 version being provisioned while `upgrade` runs, for the panel to say so.
+    upgrading: Mutex<Option<String>>,
     /// Since when it has been up without a break (wall clock), and whether that stretch was
     /// already warned about.
     awake_since: Mutex<Option<SystemTime>>,
     pub(crate) awake_warned: Mutex<bool>,
+    /// The models its agents offered when last listed (`issues.rs`), for while T3's list is
+    /// briefly empty.
+    pub(crate) models_seen: Mutex<Vec<issues::ModelChoice>>,
     /// Its ports forwarded to this computer, by port on the machine.
     forwards: Mutex<HashMap<u16, preview::Forward>>,
     /// The servers T3 found listening on it, as last read, and when.
     servers: Mutex<(Vec<preview::LocalServer>, Option<Instant>)>,
+}
+
+/// Marks a provisioning as running for as long as it's held, so the panel can say so.
+struct Upgrading<'a>(&'a MachineRuntime);
+
+impl<'a> Upgrading<'a> {
+    fn start(m: &'a MachineRuntime, version: &str) -> Self {
+        *m.upgrading.lock().unwrap() = Some(version.to_owned());
+        m.shared.changed();
+        Self(m)
+    }
+}
+
+impl Drop for Upgrading<'_> {
+    fn drop(&mut self) {
+        *self.0.upgrading.lock().unwrap() = None;
+        self.0.shared.changed();
+    }
 }
 
 impl MachineRuntime {
@@ -239,8 +268,13 @@ impl MachineRuntime {
             projects: Mutex::new(Vec::new()),
             adding: Mutex::new(Vec::new()),
             github_code: Mutex::new(None),
+            signing_in: Mutex::new(None),
+            sign_in_canceled: Default::default(),
+            sign_in_wake: tokio::sync::Notify::new(),
+            upgrading: Mutex::new(None),
             awake_since: Mutex::new(None),
             awake_warned: Mutex::new(false),
+            models_seen: Mutex::new(Vec::new()),
             forwards: Mutex::new(HashMap::new()),
             servers: Mutex::new((Vec::new(), None)),
         };
@@ -298,6 +332,16 @@ impl MachineRuntime {
     /// GitHub's one-time code while its sign-in waits for the user to enter it.
     pub fn github_code(&self) -> Option<String> {
         self.github_code.lock().unwrap().clone()
+    }
+
+    /// The T3 version the machine is being provisioned with right now.
+    pub fn upgrading(&self) -> Option<String> {
+        self.upgrading.lock().unwrap().clone()
+    }
+
+    /// The agent whose sign-in runs here, as `signed_out` names it.
+    pub fn signing_in(&self) -> Option<String> {
+        self.signing_in.lock().unwrap().clone()
     }
 
     /// Missing is final: an Agent37 answer or a wake still in flight from before must not revive a
@@ -443,6 +487,10 @@ impl MachineRuntime {
             return None;
         }
         self.cache.lock().unwrap().descriptor = Some(v.clone());
+        // T3 Code updates machines itself too ("Update machines"): what the machine serves counts.
+        if let Some(version) = v["serverVersion"].as_str().filter(|s| *s != self.record().t3_version) {
+            self.server_changed(version.to_owned());
+        }
         Some(v)
     }
 
@@ -615,11 +663,17 @@ impl MachineRuntime {
         let desktop = self.shared.t3.version().await?;
         let revision = provision::revision();
         let record = self.record();
-        let new_server = desktop != record.t3_version;
-        if !force && !new_server && revision == record.provision_revision {
+        // T3 Code's own update may have taken the machine past the desktop app's version. It
+        // never goes back: T3's database doesn't follow, and T3 refuses remote downgrades too.
+        let target = match provision::cmp_versions(&desktop, &record.t3_version) {
+            std::cmp::Ordering::Greater => desktop,
+            _ => record.t3_version.clone(),
+        };
+        if !force && target == record.t3_version && revision == record.provision_revision {
             return Ok(());
         }
-        tracing::info!("upgrading {} (T3 {desktop}, scripts {revision})", self.id());
+        tracing::info!("upgrading {} (T3 {target}, scripts {revision})", self.id());
+        let _upgrading = Upgrading::start(self, &target);
         let heartbeat = match record.heartbeat_url.as_str() {
             "" => {
                 let url = provision::heartbeat_url(&self.shared.a37, &record.sandbox_id).await?;
@@ -628,33 +682,37 @@ impl MachineRuntime {
             }
             url => url.to_owned(),
         };
-        provision::run(
+        let provisioned = provision::run(
             &self.shared.a37,
             &record.sandbox_id,
             &record.name,
-            &desktop,
+            &target,
             &record.watchdog_secret,
             &heartbeat,
             false,
         )
         .await?;
-        self.update_record(|m| {
-            m.t3_version = desktop;
-            m.provision_revision = revision;
-        });
+        let version = provisioned.t3_version.unwrap_or(target);
+        self.update_record(|m| m.provision_revision = revision);
+        self.cache.lock().unwrap().bump_epoch();
+        if version != self.record().t3_version {
+            self.server_changed(version);
+        }
+        self.wait_ready(Instant::now()).await
+    }
+
+    /// The machine's T3 runs another version now: after an upgrade here, or T3 Code's own update.
+    /// What was recorded from the old server (streams, stored chats) is in its encoding.
+    fn server_changed(&self, version: String) {
+        tracing::info!("{} runs T3 {version}", self.id());
+        self.update_record(|m| m.t3_version = version);
         {
             let mut cache = self.cache.lock().unwrap();
             cache.bump_epoch();
-            if new_server {
-                // Recorded streams and stored chats are in the old server's encoding.
-                cache.streams.clear();
-            }
+            cache.streams.clear();
         }
-        if new_server {
-            threads::sweep(&self.dir, &HashSet::new());
-            self.save_cache();
-        }
-        self.wait_ready(Instant::now()).await
+        threads::sweep(&self.dir, &HashSet::new());
+        self.save_cache();
     }
 
     async fn flush_deferred_commands(&self) {

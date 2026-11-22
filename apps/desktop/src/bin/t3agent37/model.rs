@@ -3,7 +3,9 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use t3agent37_lib::app::{MachineState as State, MachineView};
+use t3agent37_lib::app::{AgentLogin, MachineState as State, MachineView};
+use t3agent37_lib::machine::signin::Account;
+use t3agent37_lib::machine::issues::IssueSettings;
 use t3agent37_lib::machine::provision::SizeInfo;
 
 use crate::backend::Cmd;
@@ -87,8 +89,69 @@ pub fn delete_anyway() -> Action {
     action("Delete anyway", "Deleting…", Cmd::Delete { discard: true })
 }
 pub fn sign_in_to(agent: &str) -> Action {
-    action(format!("Sign in {agent}"), "Signing in…", Cmd::SignIn(agent.into()))
+    action(format!("Sign in {agent}"), "Signing in…", Cmd::SignIn { agent: agent.into(), another: false })
 }
+/// A sign-in in a private window, for another account than the browser's.
+pub fn sign_in_another(agent: &str) -> Action {
+    action(format!("Sign in {agent} with another account"), "Signing in…", Cmd::SignIn { agent: agent.into(), another: true })
+}
+/// Signs a signed-in agent in again, with another account; the old one stays until that's done.
+pub fn switch_account(agent: &str) -> Action {
+    action(format!("Switch {agent} account"), SWITCHING, Cmd::SignIn { agent: agent.into(), another: true })
+}
+pub const SWITCHING: &str = "Switching account…";
+
+/// "you@example.com · Ultra", "@octocat": who an agent is signed in as, if known.
+pub fn account_line(a: &AgentLogin) -> Option<String> {
+    let who = a.account.email.clone().or_else(|| a.login.as_ref().map(|l| format!("@{l}")));
+    let parts: Vec<String> = who.into_iter().chain(a.account.plan.clone()).collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// "Weekly 35% · Fable 48%": the plan's usage limits as last checked, and how long ago that
+/// was once it's 15 minutes or more ("· 3h ago"). A limit that has reset since says so.
+pub fn usage_line(a: &Account, now_ms: i64) -> Option<String> {
+    if a.usage.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<String> = a
+        .usage
+        .iter()
+        .map(|w| {
+            // "Weekly · Fable" → "Fable": the window's own part.
+            let label = w.label.rsplit(" · ").next().unwrap_or(&w.label);
+            match w.resets_at {
+                Some(at) if at <= now_ms => format!("{label} reset"),
+                _ => format!("{label} {}%", w.used_percent.round() as i64),
+            }
+        })
+        .collect();
+    if let Some(at) = a.usage_checked_at {
+        let age = (now_ms - at).max(0) as u64 / 1000;
+        if age >= 15 * 60 {
+            parts.push(format!("{} ago", ago(age)));
+        }
+    }
+    Some(parts.join(" · "))
+}
+
+/// The usage line is worth a look: a limit at 90% or more.
+pub fn usage_high(a: &Account, now_ms: i64) -> bool {
+    a.usage.iter().any(|w| w.used_percent >= 90. && w.resets_at.is_none_or(|at| at > now_ms))
+}
+
+/// "20m", "5h", "3d".
+fn ago(secs: u64) -> String {
+    let m = secs / 60;
+    if m < 60 {
+        format!("{m}m")
+    } else if m < 48 * 60 {
+        format!("{}h", m / 60)
+    } else {
+        format!("{}d", m / (24 * 60))
+    }
+}
+
 pub fn resize_to(size: &str) -> Action {
     action(format!("Resize to {size}"), "Resizing…", Cmd::Resize(size.into()))
 }
@@ -103,6 +166,14 @@ pub fn open_port(port: u16) -> Action {
 }
 pub fn close_port(port: u16) -> Action {
     action(format!("Stop forwarding :{port}"), "Stopping…", Cmd::ClosePort(port))
+}
+/// Issues on with `settings`; `saving`: they're on already, and these replace theirs.
+pub fn issues_on(project: &str, settings: IssueSettings, saving: bool) -> Action {
+    let (label, busy) = if saving { ("Save", "Saving issue settings…") } else { ("Turn on", "Turning issues on…") };
+    action(label, busy, Cmd::Issues { project: project.into(), on: true, settings: Some(settings) })
+}
+pub fn issues_off(project: &str) -> Action {
+    action("Stop working on issues", "Turning issues off…", Cmd::Issues { project: project.into(), on: false, settings: None })
 }
 
 /// Opens the machine's latest thread in T3 Code, named so the button says where it goes.
@@ -307,6 +378,12 @@ pub fn clean_name(raw: &str) -> String {
     out.chars().take(32).collect()
 }
 
+/// The sign-ins the list asks for. One coding agent is enough to work, so the others aren't
+/// asked for once one is signed in; GitHub still is, for private repos and pushing.
+pub fn sign_ins_to_ask(signed_in: &[String], signed_out: &[String]) -> Vec<String> {
+    signed_out.iter().filter(|a| signed_in.is_empty() || *a == t3agent37_lib::app::GITHUB).cloned().collect()
+}
+
 /// "Claude", "Claude and Codex", "A, B and C" (the joiners before each name).
 pub fn joiners(n: usize) -> impl Iterator<Item = &'static str> {
     (0..n).map(move |i| if i == 0 { "" } else if i == n - 1 { " and " } else { ", " })
@@ -315,6 +392,42 @@ pub fn joiners(n: usize) -> impl Iterator<Item = &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use t3agent37_lib::machine::signin::UsageWindow;
+
+    #[test]
+    fn account_and_usage_lines() {
+        let now = 1_000_000_000_000;
+        let window = |label: &str, pct: f64, resets_in: i64| UsageWindow {
+            label: label.into(),
+            used_percent: pct,
+            resets_at: Some(now + resets_in),
+        };
+        let account = Account {
+            email: Some("you@example.com".into()),
+            plan: Some("Ultra".into()),
+            usage: vec![window("Weekly", 35.4, 3_600_000), window("Weekly · Fable", 92., 3_600_000)],
+            usage_checked_at: Some(now - 60_000),
+        };
+        let claude = AgentLogin { name: "Claude".into(), signed_in: true, account: account.clone(), login: None };
+        assert_eq!(account_line(&claude).as_deref(), Some("you@example.com · Ultra"));
+        assert_eq!(usage_line(&account, now).as_deref(), Some("Weekly 35% · Fable 92%"));
+        assert!(usage_high(&account, now));
+        // Checked 3 hours ago, and the Fable limit has reset since.
+        let old = Account { usage_checked_at: Some(now - 3 * 3_600_000), usage: vec![window("Weekly", 35., 60_000), window("Weekly · Fable", 92., -1)], ..account };
+        assert_eq!(usage_line(&old, now).as_deref(), Some("Weekly 35% · Fable reset · 3h ago"));
+        assert!(!usage_high(&old, now));
+        let github = AgentLogin { name: "GitHub".into(), signed_in: true, account: Account::default(), login: Some("octocat".into()) };
+        assert_eq!(account_line(&github).as_deref(), Some("@octocat"));
+        assert_eq!(usage_line(&github.account, now), None);
+    }
+
+    #[test]
+    fn sign_ins_asked_for() {
+        let v = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(sign_ins_to_ask(&[], &v(&["Claude", "Codex", "GitHub"])), v(&["Claude", "Codex", "GitHub"]));
+        assert_eq!(sign_ins_to_ask(&v(&["Claude"]), &v(&["Codex"])), v(&[]));
+        assert_eq!(sign_ins_to_ask(&v(&["Codex"]), &v(&["Claude", "GitHub"])), v(&["GitHub"]));
+    }
 
     #[test]
     fn names() {

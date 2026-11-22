@@ -97,10 +97,16 @@ pub struct Panel {
     stay_awake_open: bool,
     more_open: bool,
     signing_in: Option<String>,
+    /// Machines whose sign-in the user canceled, until it has stopped.
+    canceled_sign_in: std::collections::HashSet<String>,
     /// The auto sleep switch as clicked, until the machine says so too.
     power_want: Option<bool>,
     /// A T3 Connect switch as clicked ("approval" or "push"), until the machine says so too.
     connect_want: Option<(&'static str, bool)>,
+    /// A project's issues switch as clicked (project id, on), until the machine says so too.
+    issues_want: Option<(String, bool)>,
+    /// A project's issue settings being picked, to turn issues on or change them.
+    issues_form: Option<details::IssuesForm>,
     /// The port whose Open runs.
     opening_port: Option<u16>,
     /// The previews section's "port" field, while it's open.
@@ -201,8 +207,11 @@ impl Panel {
             stay_awake_open: false,
             more_open: false,
             signing_in: None,
+            canceled_sign_in: Default::default(),
             power_want: None,
             connect_want: None,
+            issues_want: None,
+            issues_form: None,
             opening_port: None,
             port_input: None,
             picker: None,
@@ -282,6 +291,9 @@ impl Panel {
         if self.connect_want.is_some() && !self.pending.values().any(|b| b.contains("device approval") || b.contains("phone push")) {
             self.connect_want = None;
         }
+        if self.issues_want.is_some() && !self.pending.values().any(|b| b.contains("issue")) {
+            self.issues_want = None;
+        }
         if self.login_want == Some(self.state.settings.start_at_login) {
             self.login_want = None;
         }
@@ -330,6 +342,8 @@ impl Panel {
         self.signing_in = None;
         self.power_want = None;
         self.connect_want = None;
+        self.issues_want = None;
+        self.issues_form = None;
         self.opening_port = None;
         self.port_input = None;
         self.picker = None;
@@ -377,6 +391,9 @@ impl Panel {
             self.stay_awake_open = false;
         } else if self.port_input.is_some() {
             self.port_input = None;
+            self.focus.focus(window, cx);
+        } else if self.issues_form.is_some() {
+            self.issues_form = None;
             self.focus.focus(window, cx);
         } else if self.picker.is_some() {
             self.picker = None;
@@ -440,6 +457,17 @@ impl Panel {
 
     // ── running commands ──
 
+    /// Stops the sign-in that runs on `m`; its own `track` then says so.
+    fn cancel_sign_in(&mut self, m: &MachineView, cx: &mut Context<Self>) {
+        self.canceled_sign_in.insert(machine_key(m));
+        let job = self.backend.act(m.id.clone(), Cmd::CancelSignIn);
+        cx.spawn(async move |_, _| {
+            let _ = job.await;
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// Runs a machine command, its busy label on the row meanwhile; says how it went.
     fn track(&mut self, m: &MachineView, action: Action, cx: &mut Context<Self>) {
         let key = machine_key(m);
@@ -459,8 +487,19 @@ impl Panel {
                     (Err(e), Cmd::Delete { discard: false }) => {
                         this.delete_errors.insert(key, e);
                     }
+                    (Err(_), Cmd::SignIn { agent, .. }) if this.canceled_sign_in.remove(&key) => {
+                        this.toast(format!("{agent} sign-in canceled. {name} keeps the sign-in it had."), false, cx)
+                    }
                     (Err(e), _) => this.toast(format!("{name}: {e}"), true, cx),
-                    (Ok(_), Cmd::SignIn(agent)) => this.toast(format!("{agent} is signed in on {name}"), false, cx),
+                    (Ok(who), Cmd::SignIn { agent, .. }) => {
+                        this.canceled_sign_in.remove(&key);
+                        let text = match who {
+                            Some(who) if action.busy == crate::model::SWITCHING => format!("{agent} on {name} is now {who}"),
+                            Some(who) => format!("{agent} is signed in on {name} as {who}"),
+                            None => format!("{agent} is signed in on {name}"),
+                        };
+                        this.toast(text, false, cx)
+                    }
                     (Ok(_), Cmd::TurnOnConnect) => this.toast(format!("{name} is reachable from your other devices"), false, cx),
                     (Ok(url), Cmd::WakeLink { renew }) => {
                         if let Some(url) = url {
@@ -476,6 +515,10 @@ impl Panel {
                     (Ok(Some(url)), Cmd::OpenPort(port)) => {
                         let here = url.trim_start_matches("http://");
                         this.toast(format!("Opened {here} · port {port} on {name}"), false, cx);
+                    }
+                    (Ok(_), Cmd::Issues { on: true, settings: Some(s), .. }) => {
+                        let saved = if action.busy.starts_with("Saving") { "Saved. " } else { "" };
+                        this.toast(format!("{saved}Label a GitHub issue \"{}\" and {name} opens a pull request", s.label), false, cx)
                     }
                     (Ok(_), Cmd::Open { .. }) if !paired => this.toast(accept_hint, false, cx),
                     (Ok(_), Cmd::Pair) => this.toast(accept_hint, false, cx),
