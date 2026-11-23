@@ -6321,7 +6321,7 @@ dependencies = [
 
 [[package]]
 name = "t3agent37"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "axum",
