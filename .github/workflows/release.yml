@@ -2,7 +2,9 @@
 # for Apple silicon and Intel, signs it with the Developer ID, has Apple notarize it, and
 # publishes the DMG and Sparkle's appcast.xml as that tag's GitHub release
 # (apps/desktop/scripts/release-macos.sh --publish), with the `t3agent37` command alone for macOS
-# and, built on Linux runners first, for Linux (x86_64 and arm64), each with its .sha256.
+# and, built on Linux runners first, for Linux (x86_64 and arm64), each with its .sha256. Then
+# the Homebrew tap (dagurleo/homebrew-tap) gets the new cask and formula
+# (apps/desktop/scripts/homebrew-tap.sh), pushed with its deploy key.
 #
 # The keys are the `release` environment's secrets, given only to runs for v* tags, and only once
 # the maintainer approves the run (Settings > Environments > release). The Linux builds need no
@@ -128,6 +130,13 @@ jobs:
           NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER_ID }}
           EXTRA_ASSETS_DIR: ${{ runner.temp }}/linux
         run: NOTARY_KEY="$KEYS/notary.p8" SPARKLE_KEY_FILE="$KEYS/update-key" scripts/release-macos.sh --publish
+
+      - name: The Homebrew tap
+        env:
+          TAP_KEY: ${{ secrets.HOMEBREW_TAP_KEY }}
+        run: |
+          if [ -z "$TAP_KEY" ]; then echo "::warning::no HOMEBREW_TAP_KEY: the tap wasn't updated"; exit 0; fi
+          scripts/homebrew-tap.sh "$GITHUB_REF_NAME"
 
       - name: Clean up the keys
         if: always()

@@ -209,6 +209,7 @@ impl MachineRuntime {
     /// Waits for the restarted server to link the machine and bring its tunnel up.
     async fn wait_connect_linked(&self) -> Result<()> {
         let started = Instant::now();
+        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
         loop {
             // the server is up again, but its link and tunnel come a moment later
             if let Ok(state) = self.connect_api(Method::GET, "link-state", None).await
@@ -217,12 +218,31 @@ impl MachineRuntime {
             {
                 return Ok(());
             } else if started.elapsed() > LINK_TIMEOUT {
+                // T3's relay may have refused the link (an account at its tunnel limit): the link
+                // state only says "not linked", T3's trace says why.
+                if let Some(why) = self.link_failure(since).await {
+                    // T3's advice to restart it is what turning T3 Connect on again here does.
+                    let why = why.replace(", then restart T3 Code on this machine.", ".");
+                    bail!("T3 Connect didn't link {}: {why} Then turn T3 Connect on again.", self.record().name);
+                }
                 let state = self.connect_api(Method::GET, "link-state", None).await.unwrap_or_default();
                 let reason = state["reachability"]["reason"].as_str().unwrap_or("its tunnel did not come up");
                 bail!("T3 Connect is not reachable yet: {reason}");
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
+    }
+
+    /// Why T3 last failed to link the machine with T3 Connect, after `since` (Unix nanoseconds),
+    /// from its trace on the machine.
+    async fn link_failure(&self, since: u128) -> Option<String> {
+        let out = self
+            .shared
+            .a37
+            .exec(&self.sandbox_id(), "grep -F '\"environment.cloud.reconcileDesiredLinkWith\"' \"$HOME/.t3/userdata/logs/server.trace.ndjson\" | tail -n 1", 30)
+            .await
+            .ok()?;
+        link_failure(out.stdout.trim(), since)
     }
 
     /// T3's `/api/connect/*` routes on the machine.
@@ -255,6 +275,40 @@ impl MachineRuntime {
     }
 }
 
+/// The failure in one of T3's trace spans (`environment.cloud.reconcileDesiredLinkWith`), if it
+/// failed after `since`: its message, without the error's name and T3's trace id.
+fn link_failure(span: &str, since: u128) -> Option<String> {
+    let span: Value = serde_json::from_str(span).ok()?;
+    let start: u128 = span["startTimeUnixNano"].as_str()?.parse().ok()?;
+    if start < since || span["exit"]["_tag"] != "Failure" {
+        return None;
+    }
+    let cause = span["exit"]["cause"].as_str()?.lines().next()?.trim();
+    let cause = cause.split_once(": ").map_or(cause, |(name, rest)| if name.ends_with("Error") { rest } else { cause });
+    let cause = cause.strip_prefix("T3 Connect: ").unwrap_or(cause);
+    let cause = cause.split(" Trace ID:").next().unwrap_or(cause).trim();
+    (!cause.is_empty()).then(|| cause.to_owned())
+}
+
 fn last_line(log: &str) -> &str {
     log.lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or("no output")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::link_failure;
+
+    #[test]
+    fn t3s_reason_for_not_linking() {
+        // As T3 0.1.12-nightly.20261122.5071 wrote it on an account with 3 tunnels already.
+        let span = r#"{"type":"effect-span","name":"environment.cloud.reconcileDesiredLinkWith","startTimeUnixNano":"1795440522601015556","exit":{"_tag":"Failure","cause":"RelayRequestError: T3 Connect: Relay managed tunnel limit reached: this account allows at most 3 tunnels. Unlink an unused environment in T3 Connect, then restart T3 Code on this machine. Trace ID: 7c24c05f47fb6620cefb5ff964fd5483.\n    at file:///root/.t3/t3:5"}}"#;
+        assert_eq!(
+            link_failure(span, 1795440500000000000).as_deref(),
+            Some("Relay managed tunnel limit reached: this account allows at most 3 tunnels. Unlink an unused environment in T3 Connect, then restart T3 Code on this machine.")
+        );
+        // From before this try, or one that worked: nothing to say.
+        assert_eq!(link_failure(span, 1795440600000000000), None);
+        assert_eq!(link_failure(&span.replace("\"Failure\"", "\"Success\""), 0), None);
+        assert_eq!(link_failure("", 0), None);
+    }
 }

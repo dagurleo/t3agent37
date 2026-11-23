@@ -25,6 +25,12 @@ impl Backend {
         Self { http, base: format!("http://127.0.0.1:{}", mcp::port()) }
     }
 
+    /// For shell completions: an answer within a moment, or none.
+    pub fn quick() -> Self {
+        let http = reqwest::Client::builder().no_proxy().timeout(Duration::from_millis(1500)).build().expect("an HTTP client");
+        Self { http, base: format!("http://127.0.0.1:{}", mcp::port()) }
+    }
+
     /// A tool's answer (text: a sentence, or JSON for the lists), once it's done.
     pub async fn call(&self, tool: &str, arguments: Value) -> Result<String> {
         let res = self

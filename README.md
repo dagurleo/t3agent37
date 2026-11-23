@@ -49,7 +49,11 @@ What was kept and what changed:
 
 ## Install
 
-Download `t3agent37.dmg` from the [latest release](https://github.com/dagurleo/t3agent37/releases/latest), open it and drag t3agent37 to Applications. It's signed and notarized by Apple.
+Download `t3agent37.dmg` from the [latest release](https://github.com/dagurleo/t3agent37/releases/latest), open it and drag t3agent37 to Applications. It's signed and notarized by Apple. Or with [Homebrew](https://brew.sh), which also links the `t3agent37` command:
+
+```sh
+brew install --cask dagurleo/tap/t3agent37
+```
 
 It updates itself: it looks for a new release once a day, and **Check for Updates…** (right-click the menu-bar icon) or **Settings → Check now** looks right away.
 
@@ -61,7 +65,13 @@ To build it yourself instead, see [CONTRIBUTING.md](CONTRIBUTING.md#build-instal
 curl -fsSL https://raw.githubusercontent.com/dagurleo/t3agent37/main/install.sh | sh
 ```
 
-That puts `t3agent37` in `~/.local/bin`, from the latest release, checked against its checksum; run it again to update. With the app installed, the app's own program is the command too, and updates with it:
+That puts `t3agent37` in `~/.local/bin`, from the latest release, checked against its checksum. `t3agent37 update` updates it the same way (`--check` only says whether there's a new one). Or with Homebrew, on macOS or Linux, which `brew upgrade` updates:
+
+```sh
+brew install --formula dagurleo/tap/t3agent37
+```
+
+With the app installed, the app's own program is the command too, and updates with it (the cask links it for you):
 
 ```sh
 ln -s /Applications/t3agent37.app/Contents/MacOS/t3agent37 ~/.local/bin/t3agent37
@@ -74,6 +84,8 @@ t3agent37 setup              # your Agent37 API key, asked for (hidden) and kept
 t3agent37 serve --install    # t3agent37 runs now and at every login (launchd on macOS, systemd on Linux)
 t3agent37 create raven       # a machine; T3 Code asks you to add it
 ```
+
+With Homebrew, `brew services start t3agent37` does what `serve --install` does. Tab completion, machine names and projects included: `t3agent37 completions zsh > "${fpath[1]}/_t3agent37"` for zsh, `source <(t3agent37 completions bash)` in `~/.bashrc`, or `t3agent37 completions fish > ~/.config/fish/completions/t3agent37.fish` (Homebrew's formula installs them).
 
 `serve` is what the app does, without the panel: T3 Code reaches the machines through it, it puts them to sleep and wakes them, and it answers the command and coding agents. Its log is `~/Library/Logs/t3agent37.log` on macOS and `journalctl --user -u t3agent37` on Linux; `t3agent37 serve` alone runs it in the terminal instead. Run either the app or `serve`, not both: the second stops at once.
 
@@ -113,6 +125,8 @@ Then work with it on the pull request, as with a colleague:
 
 The machine reacts 👀 to what it passed on. Comments within 30 seconds of each other go as one message. The agent works in the same thread, so it remembers the issue, then pushes to the same branch and replies once on the pull request. To stop a loop from running up costs, a pull request gets at most 6 rounds a day, and CI at most 3 fixes in a row; the machine says so on the pull request when it pauses. Each comment, review and CI run on the repo reaches the machine, and wakes it if it sleeps; when it's nothing for the agent, the machine goes back to sleep after about a minute.
 
+The agent's first message has the issue's text and its comments up to the label (the latest 30, without the machine's own), each with its author's role in the repo, and says to go by the author and the repo's owner, members and collaborators where comments disagree. Comments made after it started don't reach it; on its pull request, `/agent` comments do.
+
 The issue's text goes to an agent that can push, so only labels from people with push access count. Anyone who can open an issue can still write its text, so on a public repo read an issue before you label it.
 
 To have any service start an agent, make a scheduled task with a webhook in T3 Code: its prompt, project and agent, and optionally filters (run only when `body.action` is `created`, say) and a signing secret. T3's own webhook URL goes through T3 Connect, which can't wake a sleeping machine: the delivery waits until something else wakes it. So the machine's details list its webhook tasks under **webhooks**, each with **Copy URL**: an address that wakes the machine first. T3 checks the token, signature and filters, logs the delivery and runs the task, as with its own URL. A delivery T3 turns away or filters out lets the machine sleep again after about a minute. The addresses work without T3 Connect too. Anyone with one can send the task deliveries, so treat it like a password, and use a signing secret for anything that matters.
@@ -141,7 +155,7 @@ t3agent37 list                          # the machines, what each is doing, and 
 t3agent37 details skiff                 # its agents, what it's doing and finished, its load, projects and costs
 t3agent37 wake skiff                    # and sleep, keep-awake skiff 30, auto-sleep skiff off
 t3agent37 add-project skiff Tantalum    # one of `t3agent37 projects`
-t3agent37 sign-in skiff github          # in your browser; the GitHub code shows in the terminal
+t3agent37 sign-in skiff github          # in your browser; the GitHub code shows in the terminal (--cancel stops one)
 t3agent37 issues skiff Tantalum on --model claude-opus-5-5 --effort high
 t3agent37 start-url skiff on            # prints the URL: it's a secret
 ```
@@ -207,6 +221,11 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 
 - The `t3agent37` command, on a Mac: `list`, `details`, `status`, `sizes` and its errors against the running app (against an older app too, through MCP's own calls), and through a link to the app's own program. `setup` refused an empty key, checked the real one with Agent37 and saved it readable by its owner only. `serve`, with a data folder and port of its own: it listed the account's machines as made on another computer, refused a second `serve`, and stopped on SIGTERM. `serve --install` and `--uninstall` with launchd: with the app running, the one launchd started stopped at once and wasn't started again.
 - The command alone on Linux (arm64, in Docker): its tests and a release build.
+- The command against a new machine (probe, small), on 2026-11-23: `create` with its progress line, `details`, `add-project` (waking it, cloning, setting up), `port` (a server on the machine answering at `localhost` here), `sign-in github` showing the code and `sign-in --cancel` stopping it (the waiting command then ended with "the sign-in was canceled"), `resize` there and back, with ^C 4 s into one (the command stopped, the resize finished), `keep-awake`, `auto-sleep` off and on, `sleep`, `wake`, and their refusals of bad input. `issues` refused without GitHub, and turned on skiff's again with its settings. Creating a machine first failed with "Argument list too long" (see CONTRIBUTING.md); fixed, creating took about 30 s and re-provisioning skiff onto the new scripts about 30 s.
+- An issue's comments reaching the agent, on a private repo: an issue with two comments from its owner, one asking for an exact last line and one for a mention of Bun. Labeled, the thread's first message quoted both, with the author's role, and the pull request did both.
+- `serve --install` on Linux with systemd (Ubuntu 24.04 in Docker, a user with lingering, a stand-in key and `t3`): the unit started, logged to the journal and answered the command; killed with SIGABRT it was started again 30 s later, stopped it stayed stopped; `update` replaced the program under it and restarted it; `--uninstall` stopped and removed it. Completions there in bash and fish, and in zsh on a Mac (Tab completed a project with a space in its name).
+- `update` on a Mac and on Linux: `--check`, a release that doesn't exist, `--to v0.1.9` (the Mac's download passed Gatekeeper as notarized), and its refusals of the app's program and of a build from source. `install.sh` against the published 0.1.9 on a Mac.
+- The Homebrew tap: `brew style` and `brew audit --strict --online` of the cask and the formula, and the formula installed from a test tap, its `brew test`, and the command it put on PATH answering.
 
 **Not tried yet:**
 - Resize, delete, create, sign-ins, T3 Connect and the wake link from the GPUI panel. (They worked from the Tauri panel; the GPUI one calls the same backend functions.)
@@ -220,16 +239,18 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 - The start URL from the panel (turning it on, replacing it, turning it off), and from Grok itself. Turning it on and replacing it worked through the MCP tool.
 - A second computer for real: the list's **on your agent37 account** section and **Add here**, and T3 Code there adding the machine.
 - A thread opening in T3 Code from the **now** and **finished** sections.
-- The command's `create`, `delete`, `sign-in`, `add-project`, `issues`, `port` and `connect` (each is the MCP tool of the same name, which were tried), and its progress line while one runs. `serve --install` with systemd on a Linux desktop, and `serve` there with T3 Code's Linux app. The release's builds of the command and `install.sh`, which come with the next release.
+- `serve` with T3 Code's Linux app, on a Linux desktop. The cask installed (its audit passed), and the formula on Linux.
+- T3 Connect turned on for a new machine under T3's service launcher: on probe the sign-in finished and T3 restarted, then T3's relay refused the link because the T3 account already had its 3 tunnels.
 - The Graphite look, the panel's sizes and the animated rooftop setting on screen (built and unit-tested; the mockups were reviewed).
 - A GitHub token limited to some repos, end to end: GitHub's filled-in page, the panel's field, gh on the machine with the token, the repos it lists, and pull request CI from GitHub Actions. What was tried: the machine's check of its GitHub login (on skiff, gh's own sign-in read as reaching every repo) and GitHub refusing a made-up token (401).
-- The "Update N machines?" dialog in T3 Code updating a machine through the proxy (the same update call was made on the machine itself). Also, under the launcher: creating a machine, moving one to a newer desktop version by provisioning, and turning on T3 Connect.
+- The "Update N machines?" dialog in T3 Code updating a machine through the proxy (the same update call was made on the machine itself). Also, under the launcher: moving a machine to a newer desktop version by provisioning.
 
 **Known gaps:**
+- **T3 Connect allows 3 tunnels per T3 account** (T3's free plan, as seen in November 2026). Past that, turning it on for a machine signs in and restarts T3, then fails with T3's own reason, "Relay managed tunnel limit reached": unlink an environment in T3 Connect first.
 - **Previews list only servers T3's agents and terminals started.** Others (Docker, a database) open by number.
-- **GitHub issues are a prototype.** Only an issue's title and description go to the agent, not its comments. On the pull request, CI counts through check runs (GitHub Actions, Cloudflare and other GitHub apps), not the older commit statuses some services post, and only the first 100 reviews and comments are read. The machine's GitHub login covers all its repos unless it's signed in with a token limited to some (**Some repos only…**). A label renamed in the settings leaves the old one in the repo.
+- **GitHub issues are a prototype.** The agent gets the issue and its comments as they were when it was labeled, not comments added after (except `/agent` ones on its pull request). On the pull request, CI counts through check runs (GitHub Actions, Cloudflare and other GitHub apps), not the older commit statuses some services post, and only the first 100 reviews and comments are read. The machine's GitHub login covers all its repos unless it's signed in with a token limited to some (**Some repos only…**). A label renamed in the settings leaves the old one in the repo.
 - **The details don't say what an agent is saying or running right now**, only its thread's state: T3's thread list leaves the latest message out. Open the thread in T3 Code for that. They also miss what T3 doesn't track and what's quick: a server an agent starts as a plain shell command (not with its agent's background option) isn't listed under its thread, and subagents that finish within the app's 5-second refresh aren't counted (both seen on skiff).
-- **The command needs T3 Code's desktop app on the same computer**, as the app does: t3agent37 adds the machines to it and reads its projects. `serve`'s notifications go through `osascript` on macOS (shown as Script Editor's) and `notify-send` on Linux, and the command doesn't update itself (run `install.sh` again, or link the app's program, which does).
+- **The command needs T3 Code's desktop app on the same computer**, as the app does: t3agent37 adds the machines to it and reads its projects. `serve`'s notifications go through `osascript` on macOS (shown as Script Editor's) and `notify-send` on Linux, and the command doesn't restart a `serve` that runs in a terminal when it updates (it restarts the one `serve --install` set up).
 - **Project costs are an estimate.** They're awake time at the machine's current hourly rate, so a resize reprices the month, and the disk (billed asleep too) isn't split between projects. Time with several projects' agents working is split evenly between them.
 - **Usage limits are as of the machine's last check.** T3 checks them while the machine is awake, so a sleeping machine's details say how old they are, and use of the same plan elsewhere (your laptop, another machine) shows up only at the next check.
 - **Some things stay on each computer:** notifications, ports forwarded to it, and what it recorded for T3 Code while the machine sleeps. A computer that didn't see the machine's last work wakes it once to catch up, as after a laptop was closed.

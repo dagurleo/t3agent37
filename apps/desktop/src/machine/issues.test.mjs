@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { asksAgent, reviewCounts, ciVerdict, actionsAsRuns, roundsToday, feedbackPrompt, signedWith, MARK, MAX_ROUNDS_PER_DAY } from "./issues.mjs";
+import { asksAgent, issueComments, reviewCounts, ciVerdict, actionsAsRuns, roundsToday, feedbackPrompt, signedWith, MARK, MAX_ROUNDS_PER_DAY } from "./issues.mjs";
 import { createHmac } from "node:crypto";
 
 test("a comment asks for the agent with a line starting /agent", () => {
@@ -91,4 +91,28 @@ test("deliveries are checked against the webhook's secret", () => {
   assert.ok(!signedWith("other", body, sig));
   assert.ok(!signedWith("s3cret", body, undefined));
   assert.ok(!signedWith("", body, sig));
+});
+
+test("an issue's comments go to its thread, without the machine's own", () => {
+  assert.equal(issueComments([]), "");
+  assert.equal(issueComments(undefined), "");
+  const c = (login, body, author_association = "NONE") => ({ user: { login }, body, author_association });
+  const text = issueComments([
+    c("ana", "Also update the README.", "OWNER"),
+    c("bot", `**skiff** is on it.\n\n${MARK}`),
+    c("lee", "+1\nsecond line"),
+    c("kim", "   "),
+  ]);
+  assert.match(text, /^Its comments so far, oldest first:/);
+  assert.match(text, /@ana \(owner\) commented:\n> Also update the README\./);
+  assert.match(text, /@lee commented:\n> \+1\n> second line/);
+  assert.ok(!text.includes("skiff") && !text.includes("@kim"));
+  assert.ok(text.indexOf("@ana") < text.indexOf("@lee"));
+  // The latest that fit; the rest are counted.
+  const many = Array.from({ length: 40 }, (_, i) => c("u", `comment ${i}`));
+  const latest = issueComments(many, 140);
+  assert.match(latest, /\(110 earlier ones left out\)/);
+  assert.ok(latest.includes("comment 39") && latest.includes("comment 10") && !latest.includes("comment 9\n"));
+  const long = issueComments([c("u", "x".repeat(10_000))]);
+  assert.ok(long.length < 4_300 && long.includes("[…the rest left out]"));
 });

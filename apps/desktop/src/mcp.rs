@@ -91,6 +91,7 @@ enum Call {
         #[serde(default, rename = "anotherAccount")]
         another_account: bool,
     },
+    CancelSignIn { machine: String },
     TurnOnConnect { machine: String },
     WakeLink {
         machine: String,
@@ -346,6 +347,14 @@ fn tool_list() -> Value {
             &["machine", "agent"],
         ),
         tool(
+            "cancel_sign_in",
+            "Stops the sign-in that waits on a machine (sign_in_agent's), within a few seconds: the login \
+             on the machine is stopped, and the sign-in it had before, if any, stays. Closing the browser \
+             page doesn't stop one.",
+            json!({ "machine": machine }),
+            &["machine"],
+        ),
+        tool(
             "turn_on_connect",
             "Turns on T3 Connect on a machine, so the user's other devices (the T3 Code phone app, a \
              browser) reach it with their T3 account. Opens T3's sign-in page in the user's browser on \
@@ -520,8 +529,15 @@ impl Tools for App {
     }
 
     async fn call_to_end(self: Arc<Self>, call: Call) -> Result<String> {
-        // Detached too: a command stopped with ^C doesn't stop the work halfway.
-        tokio::spawn(async move { run(&self, call).await }).await?
+        // Detached too: a command stopped with ^C doesn't stop the work halfway, and a failure
+        // nobody waits for any more is a notification.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            if let Err(Err(e)) = tx.send(run(&self, call).await) {
+                self.shared.notify(NAME, format!("{e:#}"));
+            }
+        });
+        rx.await?
     }
 }
 
@@ -588,6 +604,17 @@ async fn run(app: &Arc<App>, call: Call) -> Result<String> {
             match who {
                 Some(who) => format!("{agent} is signed in on {} as {who}.", m.record().name),
                 None => format!("{agent} is signed in on {}.", m.record().name),
+            }
+        }
+        Call::CancelSignIn { machine } => {
+            let m = app.machine(&machine)?;
+            let name = m.record().name;
+            match m.signing_in() {
+                Some(agent) => {
+                    m.cancel_sign_in();
+                    format!("Stopped the {agent} sign-in on {name}: its sign-ins are as they were.")
+                }
+                None => format!("No sign-in waits on {name}."),
             }
         }
         Call::TurnOnConnect { machine } => {
@@ -806,7 +833,7 @@ mod tests {
     async fn lists_tools_and_rejects_unknown_methods() {
         let tools = rpc("tools/list", json!({})).await["result"]["tools"].clone();
         let names: Vec<&str> = tools.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names.len(), 20);
+        assert_eq!(names.len(), 21);
         assert!(names.contains(&"sign_in_agent") && names.contains(&"delete_machine") && names.contains(&"wake_link"));
         assert_eq!(rpc("ping", json!({})).await["result"], json!({}));
         assert_eq!(rpc("resources/list", json!({})).await["error"]["code"], -32601);

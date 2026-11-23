@@ -140,8 +140,14 @@ pub fn instance_name(name: &str) -> String {
     format!("t3agent37 · {name}")
 }
 
-/// Sends the scripts inside the command (Agent37's exec takes no files; together they are well
-/// under its 1 MB and the kernel's 128 KB argument limits) and runs `provision.sh`.
+/// The most the provisioning command may be. Agent37's exec runs it as `bash -lc <command>`, one
+/// argument, and Linux takes at most 128 KiB in one (`MAX_ARG_STRLEN`): over that, bash never
+/// starts ("Argument list too long"), which broke creating and upgrading machines in 0.1.8 and
+/// 0.1.9, at 142 KB. Kept well under, so a growing script fails this test instead.
+const MAX_COMMAND: usize = 96 * 1024;
+
+/// Sends the scripts inside the command (Agent37's exec takes no files), gzipped, and runs
+/// `provision.sh`.
 pub async fn run(
     a37: &Agent37,
     instance: &str,
@@ -151,29 +157,10 @@ pub async fn run(
     heartbeat_url: &str,
     mint_upstream_token: bool,
 ) -> Result<Provisioned> {
-    let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
     if !heartbeat_url.starts_with("https://") || !agent37::is_app_url(heartbeat_url) {
         bail!("unexpected heartbeat URL: {heartbeat_url}");
     }
-    let script = format!(
-        "set -e; d=$(mktemp -d); trap 'rm -rf \"$d\"' EXIT\n\
-         echo {p} | base64 -d > \"$d/provision.sh\"; echo {w} | base64 -d > \"$d/watchdog.mjs\"\n\
-         echo {i} | base64 -d > \"$d/issues.mjs\"; echo {st} | base64 -d > \"$d/start.mjs\"\n\
-         echo {ac} | base64 -d > \"$d/activity.mjs\"\n\
-         T3A37_SECRET={s} bash \"$d/provision.sh\" {v} {sleep} {hb} {mint} {name} {app}\n",
-        p = b64(PROVISION_SH),
-        w = b64(WATCHDOG_MJS),
-        i = b64(ISSUES_MJS),
-        st = b64(START_MJS),
-        ac = b64(ACTIVITY_MJS),
-        v = shell_word(t3_version)?,
-        s = shell_word(watchdog_secret)?,
-        sleep = SLEEP_AFTER_SECS,
-        hb = agent37::shell_quote(heartbeat_url),
-        mint = u8::from(mint_upstream_token),
-        name = shell_word(name)?,
-        app = shell_word(APP_VERSION)?,
-    );
+    let script = command(name, t3_version, watchdog_secret, heartbeat_url, mint_upstream_token)?;
     let out = a37.exec_ok(instance, &script, 600).await?;
     let line = out
         .lines()
@@ -181,6 +168,44 @@ pub async fn run(
         .find(|l| l.starts_with('{'))
         .ok_or_else(|| anyhow!("provisioning printed no result"))?;
     Ok(serde_json::from_str(line)?)
+}
+
+/// The provisioning command: each script gzipped, then base64 (nothing in it reaches the shell
+/// but those letters), unpacked into a folder of its own, then `provision.sh` run from there.
+fn command(name: &str, t3_version: &str, watchdog_secret: &str, heartbeat_url: &str, mint_upstream_token: bool) -> Result<String> {
+    let files = [
+        ("provision.sh", PROVISION_SH),
+        ("watchdog.mjs", WATCHDOG_MJS),
+        ("issues.mjs", ISSUES_MJS),
+        ("start.mjs", START_MJS),
+        ("activity.mjs", ACTIVITY_MJS),
+    ];
+    let mut script = String::from("set -e; d=$(mktemp -d); trap 'rm -rf \"$d\"' EXIT\n");
+    for (file, text) in files {
+        script.push_str(&format!("echo {} | base64 -d | gunzip > \"$d/{file}\"\n", gzipped(text)));
+    }
+    script.push_str(&format!(
+        "T3A37_SECRET={s} bash \"$d/provision.sh\" {v} {sleep} {hb} {mint} {name} {app}\n",
+        v = shell_word(t3_version)?,
+        s = shell_word(watchdog_secret)?,
+        sleep = SLEEP_AFTER_SECS,
+        hb = agent37::shell_quote(heartbeat_url),
+        mint = u8::from(mint_upstream_token),
+        name = shell_word(name)?,
+        app = shell_word(APP_VERSION)?,
+    ));
+    if script.len() > MAX_COMMAND {
+        bail!("the provisioning command is {} KB, over the {} KB a machine takes", script.len() / 1024, MAX_COMMAND / 1024);
+    }
+    Ok(script)
+}
+
+/// `text` gzipped, in base64.
+fn gzipped(text: &str) -> String {
+    use std::io::Write;
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    gz.write_all(text.as_bytes()).expect("gzip in memory");
+    base64::engine::general_purpose::STANDARD.encode(gz.finish().expect("gzip in memory"))
 }
 
 /// Only `[A-Za-z0-9._-]` reaches the remote shell.
@@ -294,8 +319,24 @@ pub async fn create(
 
 #[cfg(test)]
 mod tests {
-    use super::cmp_versions;
+    use super::{MAX_COMMAND, cmp_versions, command};
     use std::cmp::Ordering::*;
+
+    #[test]
+    fn provisioning_fits_in_one_argument() {
+        let script = command("raven", "0.1.12-nightly.20261122.5071", "abcdefghijklmnopqrstuvwxyz0123456789", "https://ve92hic1ra-3775.agent37.app", true).unwrap();
+        assert!(script.len() < MAX_COMMAND, "{} bytes", script.len());
+        // Quoted for `bash -lc`, as Agent37's exec gets it: still under Linux's 128 KiB.
+        assert!(crate::agent37::shell_quote(&script).len() < 128 * 1024);
+        // Each script comes back whole.
+        use base64::Engine;
+        use std::io::Read;
+        let line = script.lines().find(|l| l.ends_with("\"$d/watchdog.mjs\"")).unwrap();
+        let packed = line.strip_prefix("echo ").unwrap().split(' ').next().unwrap();
+        let mut text = String::new();
+        flate2::read::GzDecoder::new(&base64::engine::general_purpose::STANDARD.decode(packed).unwrap()[..]).read_to_string(&mut text).unwrap();
+        assert_eq!(text, super::WATCHDOG_MJS);
+    }
 
     #[test]
     fn versions_order_as_semver() {

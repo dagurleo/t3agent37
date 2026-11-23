@@ -6,8 +6,10 @@
 
 mod args;
 mod client;
+mod complete;
 mod serve;
 mod show;
+mod update;
 
 use anyhow::{Result, anyhow, bail};
 use args::{Args, Flag};
@@ -75,6 +77,23 @@ const COMMANDS: &[Command] = &[
         Group::Start,
     ),
     cmd("status", "status", "Whether t3agent37 runs here, its version, and your wallet", &[], Group::Start),
+    cmd(
+        "update",
+        "update [--check] [--to <version>]",
+        "Install the latest release of this command over this one. --check: only say whether there's one. --to: \
+         that release instead (v0.1.9)",
+        &[("check", false), ("to", true)],
+        Group::Start,
+    ),
+    cmd(
+        "completions",
+        "completions <zsh | bash | fish>",
+        "Tab completion for your shell, machine names included. zsh: t3agent37 completions zsh > \
+         \"${fpath[1]}/_t3agent37\"; bash: source <(t3agent37 completions bash) in ~/.bashrc; fish: t3agent37 \
+         completions fish > ~/.config/fish/completions/t3agent37.fish",
+        &[],
+        Group::Start,
+    ),
     Command { alias: Some("ls"), ..cmd("list", "list [--json]", "Your machines, what each is doing, and what they cost", &[("json", false)], Group::Machines) },
     Command {
         alias: Some("show"),
@@ -128,9 +147,10 @@ const COMMANDS: &[Command] = &[
     ),
     cmd(
         "sign-in",
-        "sign-in <machine> <claude | codex | github> [--other-account]",
-        "Sign an agent, or GitHub, in on the machine, in your browser. --other-account: a private window",
-        &[("other-account", false)],
+        "sign-in <machine> <claude | codex | github> [--other-account], or sign-in <machine> --cancel",
+        "Sign an agent, or GitHub, in on the machine, in your browser. --other-account: a private window. --cancel \
+         stops a sign-in that waits (its old sign-in stays)",
+        &[("other-account", false), ("cancel", false)],
         Group::Work,
     ),
     cmd(
@@ -204,8 +224,8 @@ fn help() -> String {
         }
     }
     out.push_str(
-        "\nA machine is its name or id, from `t3agent37 list`. Every command but setup, serve, sizes and add-mcp talks to \
-         the t3agent37 running here: the app, or `t3agent37 serve`.\n",
+        "\nA machine is its name or id, from `t3agent37 list`. Every command but setup, serve, update, sizes, completions \
+         and add-mcp talks to the t3agent37 running here: the app, or `t3agent37 serve`.\n",
     );
     out
 }
@@ -232,6 +252,8 @@ async fn run(raw: Vec<String>) -> Result<i32> {
             println!("t3agent37 {VERSION}");
             return Ok(0);
         }
+        // What the shells' completion scripts ask; not in the help.
+        "__complete" => return Ok(complete::run(rest).await),
         _ => {}
     }
     let c = command(name).ok_or_else(|| anyhow!("no command {name}: `t3agent37 help` lists them"))?;
@@ -291,6 +313,17 @@ async fn run(raw: Vec<String>) -> Result<i32> {
             a.done().map_err(usage)?;
             let v = b.json("list_projects", json!({})).await?;
             return print_json_or(&a, &v, show::projects);
+        }
+        "update" => {
+            a.done().map_err(usage)?;
+            return update::update(a.flag("check"), a.value("to")).await;
+        }
+        "completions" => {
+            let shell = a.word("zsh, bash or fish").map_err(usage)?;
+            a.done().map_err(usage)?;
+            let script = complete::script(&shell).ok_or_else(|| usage(format!("no completions for {shell}: zsh, bash or fish")))?;
+            print!("{script}");
+            return Ok(0);
         }
         "sizes" => {
             a.done().map_err(usage)?;
@@ -368,6 +401,12 @@ async fn run(raw: Vec<String>) -> Result<i32> {
             a.done().map_err(usage)?;
             watched(&b, &machine, b.call("add_project", json!({ "machine": machine, "project": project }))).await?
         }
+        "sign-in" if a.flag("cancel") => {
+            let machine = a.word("a machine").map_err(usage)?;
+            let _agent = a.maybe_word();
+            a.done().map_err(usage)?;
+            b.call("cancel_sign_in", json!({ "machine": machine })).await?
+        }
         "sign-in" => {
             let machine = a.word("a machine").map_err(usage)?;
             let agent = match a.word("claude, codex or github").map_err(usage)?.to_lowercase().as_str() {
@@ -377,7 +416,12 @@ async fn run(raw: Vec<String>) -> Result<i32> {
                 other => return Err(usage(format!("no agent {other}: claude, codex or github"))),
             };
             a.done().map_err(usage)?;
-            eprintln!("{}", show::dim("The sign-in page opens in your browser; ^C stops waiting, not the sign-in."));
+            eprintln!(
+                "{}",
+                show::dim(&format!(
+                    "The sign-in page opens in your browser. ^C stops waiting, not the sign-in: `t3agent37 sign-in {machine} --cancel` stops that."
+                ))
+            );
             let args = json!({ "machine": machine, "agent": agent, "anotherAccount": a.flag("other-account") });
             watched(&b, &machine, b.call("sign_in_agent", args)).await?
         }
@@ -438,8 +482,17 @@ async fn run(raw: Vec<String>) -> Result<i32> {
         }
         other => bail!("{other} isn't done yet"),
     };
-    println!("{text}");
+    println!("{}", to_you(&text));
     Ok(0)
+}
+
+/// The tools' answers speak to a coding agent about "the user"; here, the user reads them.
+fn to_you(text: &str) -> String {
+    text.replace("asks the user to add it as a backend; tell them to confirm.", "asks you to add it as a backend: confirm it there.")
+        .replace("asks the user to add", "asks you to add")
+        .replace("; tell them to confirm.", ": confirm it there.")
+        .replace("the user's other devices reach it with their T3 account", "your other devices reach it with your T3 account")
+        .replace("until the user removes it there", "until you remove it there")
 }
 
 fn on_off(word: &str) -> Result<bool, String> {
@@ -542,6 +595,11 @@ mod tests {
             assert!(c.usage.starts_with(c.name), "{} usage", c.name);
         }
         assert_eq!(command("ls").map(|c| c.name), Some("list"));
-        assert!(help().contains("add-project"));
+        assert!(help().contains("add-project") && !help().contains("__complete"));
+        assert_eq!(
+            to_you("Created raven (x1). T3 Code now asks the user to add it as a backend; tell them to confirm."),
+            "Created raven (x1). T3 Code now asks you to add it as a backend: confirm it there."
+        );
+        assert_eq!(to_you("T3 Code now asks the user to add raven; tell them to confirm."), "T3 Code now asks you to add raven: confirm it there.");
     }
 }

@@ -18,8 +18,8 @@ use t3agent37_lib::t3desktop::T3Desktop;
 
 const COSTS_EVERY: Duration = Duration::from_secs(300);
 /// The launchd agent's label and the systemd unit's name.
-const SERVICE: &str = "dev.t3agent37.serve";
-const UNIT: &str = "t3agent37.service";
+pub const SERVICE: &str = "dev.t3agent37.serve";
+pub const UNIT: &str = "t3agent37.service";
 
 /// Runs until ^C or a stop from launchd or systemd.
 pub async fn serve() -> Result<i32> {
@@ -255,7 +255,7 @@ fn systemd_unit_path() -> Result<PathBuf> {
     Ok(dirs::config_dir().context("no config folder")?.join("systemd/user").join(UNIT))
 }
 
-fn uid() -> Result<String> {
+pub fn uid() -> Result<String> {
     let out = std::process::Command::new("id").arg("-u").output().context("running id -u")?;
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
