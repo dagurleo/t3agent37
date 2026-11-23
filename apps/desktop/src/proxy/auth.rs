@@ -73,17 +73,36 @@ impl Auth {
     }
 }
 
+/// The client's token from `Authorization`: `Bearer <token>`, or `DPoP <token>`, which T3 Code
+/// sends (with a `DPoP` proof beside it) for environments it paired with since the 0.1.12
+/// nightlies. The proof isn't checked, so a DPoP token is worth what a bearer is; only this
+/// computer reaches the proxy.
 pub fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
-    headers
-        .get(axum::http::header::AUTHORIZATION)?
-        .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
+    let value = headers.get(axum::http::header::AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+    let token = token.trim();
+    ((scheme.eq_ignore_ascii_case("bearer") || scheme.eq_ignore_ascii_case("dpop")) && !token.is_empty()).then_some(token)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bearer_and_dpop_tokens_both_count() {
+        let with = |value: &str| {
+            let mut h = axum::http::HeaderMap::new();
+            h.insert(axum::http::header::AUTHORIZATION, value.parse().unwrap());
+            bearer(&h).map(str::to_owned)
+        };
+        assert_eq!(with("Bearer abc").as_deref(), Some("abc"));
+        assert_eq!(with("DPoP abc").as_deref(), Some("abc"));
+        assert_eq!(with("dpop abc").as_deref(), Some("abc"));
+        assert_eq!(with("Basic abc"), None);
+        assert_eq!(with("Bearer "), None);
+        assert_eq!(with("abc"), None);
+        assert_eq!(bearer(&axum::http::HeaderMap::new()), None);
+    }
 
     #[test]
     fn a_ticket_opens_only_what_it_was_issued_for() {

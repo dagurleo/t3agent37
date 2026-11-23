@@ -18,6 +18,7 @@ import { DatabaseSync } from "node:sqlite";
 import { availableParallelism, homedir } from "node:os";
 import { join } from "node:path";
 import { startInbox } from "./issues.mjs";
+import { busiest, isLive, readLoad, readProcs, summarizeThreads } from "./activity.mjs";
 
 const HOME = homedir();
 const CONFIG_PATH = join(HOME, ".t3agent37", "config.json");
@@ -63,6 +64,10 @@ let lastUsedAt = Date.now();
 // The last wake, whether anything used the machine since, whether it's a brief one, and when the
 // inbox last ignored a delivery (which can arrive before the tick notices the wake).
 let wokeAt = 0;
+// What woke it, for the details in t3agent37: the first use since the wake, or what came in that
+// says so ("GitHub", "the start URL") even when it wasn't used after all. And the latest use.
+let wokeFor = null;
+let lastUse = null;
 let usedSinceWake = true;
 let briefWake = false;
 let ignoredAt = 0;
@@ -78,7 +83,7 @@ let meteredAt = Date.now();
 /** The projects the latest work since the wake was for. */
 let lastProjects = [];
 /** Agent runs in flight: top-level threads and subagents, and the top-level ones by id and title. */
-let working = { threads: 0, subagents: 0, list: [], projects: [] };
+let working = { threads: 0, subagents: 0, list: [], projects: [], detail: { working: [], recent: [] } };
 // T3 not answering: an agent might be mid-turn, so count it as working, but only this long, so a
 // broken server cannot keep the machine billing.
 const UNKNOWN_BUSY_MS = 30 * 60_000;
@@ -102,7 +107,7 @@ async function refreshWorking() {
     if (!t3Answered) inbox.catchUp();
     t3Answered = true;
   } catch (e) {
-    working = { threads: 0, subagents: 0, list: [], projects: [] };
+    working = { threads: 0, subagents: 0, list: [], projects: [], detail: { working: [], recent: working.detail.recent } };
     if (t3Answered) unknownSince ||= Date.now();
     log(e.message);
   }
@@ -120,6 +125,16 @@ let cpuLoad = 0;
 /** "Sleep now" was asked for: CPU load no longer holds the machine up, agents still do. */
 let sleepRequested = false;
 let cpuPrev = readCpu();
+// The busiest processes over the last tick, for the details in t3agent37.
+let procsPrev = readProcs();
+let procsAt = Date.now();
+let topProcs = [];
+function sampleProcs() {
+  const now = readProcs();
+  topProcs = busiest(procsPrev, now, (Date.now() - procsAt) / 1000);
+  procsPrev = now;
+  procsAt = Date.now();
+}
 const cpuBusy = () => !sleepRequested && cpuLoad > CPU_BUSY_CORES && Date.now() - lastUsedAt < CPU_HOLD_MS;
 const isBusy = () => agentsBusy() || cpuBusy();
 
@@ -240,9 +255,7 @@ function readT3State() {
   }
 }
 
-const LIVE_STATUSES = new Set(["queued", "preparing", "starting", "running", "waiting"]);
-
-/** Any agent run in flight, including one waiting on an approval: stopping would kill it. */
+/** The agents at work now, and what each is up to, from T3's shell snapshot. */
 async function checkWorking() {
   const res = await fetch(`${T3_ORIGIN}/api/orchestration/shell`, {
     headers: { authorization: `Bearer ${config.t3Token}`, "x-t3-orchestration-protocol": "2" },
@@ -250,19 +263,12 @@ async function checkWorking() {
   });
   if (!res.ok) throw new Error(`shell snapshot: HTTP ${res.status}`);
   const shell = await res.json();
-  const live = (shell.threads ?? []).filter(
-    (t) =>
-      t.activeRunId != null ||
-      t.activityRunStatus != null ||
-      LIVE_STATUSES.has(t.status) ||
-      t.pendingRuntimeRequest != null ||
-      (t.pendingBackgroundTasks?.length ?? 0) > 0,
-  );
+  const live = (shell.threads ?? []).filter(isLive);
   const top = live.filter((t) => t.lineage?.relationshipToParent !== "subagent");
   // Names the threads in t3agent37's "finished" notification.
   const list = top.slice(0, 10).map((t) => ({ id: String(t.id ?? ""), title: String(t.title ?? "") }));
   const projects = [...new Set(live.map((t) => String(t.projectId ?? "")).filter(Boolean))];
-  return { threads: top.length, subagents: live.length - top.length, list, projects };
+  return { threads: top.length, subagents: live.length - top.length, list, projects, detail: summarizeThreads(shell.threads ?? []) };
 }
 
 /** The orchestration high-water marks T3 itself compares resume cursors against. */
@@ -308,8 +314,15 @@ function touch(reason) {
   if (reason !== "resumed") {
     usedSinceWake = true;
     briefWake = false;
+    noteWake(reason);
+    lastUse = { reason, at: lastUsedAt };
   }
   hold(reason);
+}
+
+/** What came in, as the reason for the wake if it's the first thing since. */
+function noteWake(reason) {
+  if (wokeAt > 0 && wokeFor === null) wokeFor = reason;
 }
 
 /** The inbox ignored a delivery: if that's all that woke the machine, it sleeps again soon. */
@@ -400,6 +413,8 @@ async function tick() {
   if (now - lastTickAt > RESUMED_GAP_MS) {
     setKeepAwake(0);
     wokeAt = now;
+    // What arrived while the tick was frozen woke it.
+    wokeFor = lastUse && lastUse.at > lastTickAt ? lastUse.reason : null;
     usedSinceWake = false;
     briefWake = now - ignoredAt < BRIEF_WINDOW_MS;
     lastProjects = [];
@@ -423,6 +438,7 @@ async function tick() {
   }
 
   sampleCpu();
+  sampleProcs();
   await refreshWorking();
   let personActed = false;
   try {
@@ -469,6 +485,15 @@ function status() {
     idleSecs: Math.floor((Date.now() - lastActivityAt) / 1000),
     sleepAfterSecs: briefWake ? Math.min(BRIEF_SLEEP_MS / 1000, config.sleepAfterSecs) : config.sleepAfterSecs,
     usage: usageSummary(Date.now()),
+    activity: {
+      working: working.detail.working,
+      recent: working.detail.recent,
+      load: readLoad(cpuLoad, CPU_COUNT),
+      top: topProcs,
+      wokeAt: wokeAt || null,
+      wokeFor,
+      lastUse,
+    },
     nextDueAt,
     workDue: dueSoon(),
     // While stopping, it names the sequence the machine stops at: the proxy trusts its
@@ -505,10 +530,16 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/activity") {
       // { resumed }: the proxy just resumed the sandbox, so the stop asked for here is over. A
       // tick only notices a freeze of RESUMED_GAP_MS or more.
-      const { resumed } = JSON.parse((await readBody(req)) || "{}");
+      const { resumed, by } = JSON.parse((await readBody(req)) || "{}");
       if (resumed) {
         setKeepAwake(0);
-        touch("resumed by the app");
+        // The app says why it woke the machine, if it knows.
+        const reason = typeof by === "string" && by ? `app: ${by.slice(0, 60)}` : "resumed by the app";
+        if (wokeAt === 0 || Date.now() - wokeAt > RESUMED_GAP_MS) {
+          wokeAt = Date.now();
+          wokeFor = null;
+        }
+        touch(reason);
         inbox.catchUp();
         return reply(200, status());
       }
@@ -586,7 +617,7 @@ createServer((req, res) => {
 
 // GitHub issues, for the repos the user turned them on for (issues.mjs). Its public URL is made
 // with the first such repo; until then nothing reaches this port.
-const inbox = startInbox({ touch, log, wokeForNothing });
+const inbox = startInbox({ touch, log, wokeForNothing, noteWake });
 
 function wakePage() {
   const name = (readFileSafe(join(HOME, ".t3agent37", "name")).trim() || "Your machine").replace(

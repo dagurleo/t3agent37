@@ -165,7 +165,7 @@ impl Panel {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .child(sub_header("New machine", &tk, cx))
+            .when(self.state.settings.animated_rooftop, |d| d.child(sub_header("New machine", &tk, cx)))
             .child(
                 div()
                     .flex()

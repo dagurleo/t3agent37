@@ -87,6 +87,10 @@ pub struct Cache {
     pub deferred_commands: Vec<Value>,
     /// The last answer to `GET /api/voice/status`, which T3 Code reads on its own as it starts.
     pub voice_status: Option<Value>,
+    /// The agents' statuses as this app read them from the machine itself (`server.getConfig`,
+    /// `server.refreshProviders`), for when no config T3 Code read is recorded: a new machine
+    /// not opened in T3 Code yet.
+    pub fetched_providers: Vec<Value>,
 }
 
 pub fn request_key(tag: &str, payload: &Value) -> String {
@@ -225,9 +229,8 @@ impl Cache {
     /// Folds fresh provider statuses (e.g. a `server.refreshProviders` result) into the
     /// recorded configs, as a live `providerStatuses` event would.
     pub fn fold_providers(&mut self, providers: &Value) {
-        if !providers.is_array() {
-            return;
-        }
+        let Some(list) = providers.as_array() else { return };
+        self.fetched_providers.clone_from(list);
         let event = json!({"type": "providerStatuses", "payload": {"providers": providers}});
         self.streams
             .iter_mut()
@@ -236,19 +239,16 @@ impl Cache {
     }
 
     /// The machine's enabled agent providers as T3 describes them in its last config: name,
-    /// auth, models.
+    /// auth, models. The config T3 Code read when there is one, else what this app read itself.
     pub fn providers(&self) -> Vec<Value> {
-        self.streams
+        let recorded = self
+            .streams
             .iter()
             .filter(|(k, _)| k.starts_with("subscribeServerConfig "))
             .flat_map(|(_, r)| &r.value)
             .find(|i| i["type"] == "snapshot")
-            .and_then(|s| s["config"]["providers"].as_array())
-            .into_iter()
-            .flatten()
-            .filter(|p| p["enabled"] == true)
-            .cloned()
-            .collect()
+            .and_then(|s| s["config"]["providers"].as_array());
+        recorded.unwrap_or(&self.fetched_providers).iter().filter(|p| p["enabled"] == true).cloned().collect()
     }
 
     /// The machine's enabled agent providers, per its last config: name and auth status.
@@ -473,6 +473,20 @@ mod tests {
         c.fold_providers(&Value::Null);
         assert_eq!(c.signed_out_providers(), vec!["a".to_owned()]);
         c.fold_providers(&json!([provider("a", "authenticated", json!([]))]));
+        assert!(c.signed_out_providers().is_empty());
+    }
+
+    #[test]
+    fn agents_read_from_the_machine_until_t3_code_shows_its_config() {
+        let mut c = Cache::default();
+        assert!(c.providers().is_empty());
+        let disabled = json!({"instanceId": "pi", "displayName": "Pi", "enabled": false, "auth": {"status": "unknown"}});
+        c.fold_providers(&json!([provider("Claude", "unauthenticated", json!([])), disabled]));
+        assert_eq!(c.signed_out_providers(), vec!["Claude".to_owned()]);
+        // Once T3 Code's own config is recorded, it's the one that counts.
+        let snapshot = json!({"type": "snapshot", "config": {"providers": [provider("Codex", "authenticated", json!([]))]}});
+        c.record_stream_items("subscribeServerConfig", CONFIG, &[snapshot], true);
+        assert_eq!(c.signed_in_providers(), vec!["Codex".to_owned()]);
         assert!(c.signed_out_providers().is_empty());
     }
 

@@ -3,6 +3,7 @@
 //! panel; this port matched it byte for byte (86 pictures, 2026-11-20), so its rounding and
 //! hashing keep JavaScript's arithmetic.
 
+pub mod flat;
 pub mod paint;
 pub mod palette;
 pub mod scene;

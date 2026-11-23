@@ -163,11 +163,27 @@ impl T3Desktop {
     /// The ignored files T3 Code's "Add to another machine" dialog selects by default for
     /// `project`, with their contents. A file that can't be read is left out with its reason.
     pub async fn files_to_copy(&self, project: &Project) -> Result<(Vec<(String, String)>, Vec<String>)> {
-        let listed = self.call("projects.listIgnoredFiles", json!({ "cwd": project.path })).await?;
+        // T3 lists 200 ignored files at most, so a big repo's build output and logs crowd out
+        // the env files in its subfolders. Its query (a path substring) applies before that cap.
         let mut files = Vec::new();
         let mut failed = Vec::new();
-        for file in listed["files"].as_array().into_iter().flatten() {
-            let (Some(path), Some(len)) = (file["path"].as_str(), file["byteLength"].as_u64()) else { continue };
+        let mut seen = std::collections::BTreeSet::new();
+        let mut candidates = Vec::new();
+        for query in [".env", ".dev.vars"] {
+            let listed = self.call("projects.listIgnoredFiles", json!({ "cwd": project.path, "query": query })).await?;
+            if listed["truncated"] == true {
+                failed.push(format!("more files matching {query} than T3 lists at once: some weren't copied"));
+            }
+            for file in listed["files"].as_array().into_iter().flatten() {
+                if let (Some(path), Some(len)) = (file["path"].as_str(), file["byteLength"].as_u64()) {
+                    if seen.insert(path.to_owned()) {
+                        candidates.push((path.to_owned(), len));
+                    }
+                }
+            }
+        }
+        for (path, len) in &candidates {
+            let (path, len) = (path.as_str(), *len);
             if !projects::copied_by_default(path, len) {
                 continue;
             }

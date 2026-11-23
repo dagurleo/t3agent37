@@ -33,6 +33,7 @@ type M = State<Arc<MachineRuntime>>;
 
 /// Ten years: the proxy's own tokens never make T3 Code re-pair.
 const CLIENT_TOKEN_TTL_SECS: i64 = 10 * 365 * 24 * 3600;
+const ACCESS_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
 /// A T3 server linking to the machine gives its descriptor 3 s on loopback. The refresh from a
 /// running machine gets half of that; the last one seen answers after it.
 const DESCRIPTOR_REFRESH: std::time::Duration = std::time::Duration::from_millis(1500);
@@ -60,10 +61,32 @@ pub async fn serve(machine: Arc<MachineRuntime>) -> Result<()> {
         .fallback(fallback)
         .layer(middleware::from_fn(cors))
         .layer(middleware::from_fn(local_host_only))
+        .layer(middleware::from_fn_with_state(machine.clone(), log_requests))
         .with_state(machine);
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Every request and its answer, at debug level (`RUST_LOG=t3agent37_lib::proxy=debug`): the
+/// method, path, status and who asked, never a query string or a header's value but the Host
+/// and Origin. For finding out what a client asks and what it gets.
+async fn log_requests(State(m): M, req: Request, next: Next) -> Response {
+    let (method, path) = (req.method().clone(), req.uri().path().to_owned());
+    // Read before the await: a borrow of the request held across it isn't Send.
+    let (host, origin, bearer) = {
+        let header = |name: header::HeaderName| req.headers().get(name).and_then(|h| h.to_str().ok()).unwrap_or("-").to_owned();
+        (header(header::HOST), header(header::ORIGIN), req.headers().contains_key(header::AUTHORIZATION))
+    };
+    let started = std::time::Instant::now();
+    let res = next.run(req).await;
+    tracing::debug!(
+        "{} {method} {path} -> {} in {} ms (host {host}, origin {origin}, bearer {bearer})",
+        m.record().name,
+        res.status().as_u16(),
+        started.elapsed().as_millis()
+    );
+    res
 }
 
 /// Web pages can reach 127.0.0.1 too, through DNS rebinding; only requests addressed to this
@@ -127,13 +150,26 @@ async fn descriptor(State(m): M) -> Response {
     }
 }
 
-async fn oauth_token(State(m): M, Form(form): Form<HashMap<String, String>>) -> Response {
-    let code = form.get("subject_token").map(String::as_str).unwrap_or_default();
-    if !m.auth.redeem_pairing_code(code) {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid_grant"}))).into_response();
-    }
-    let token = auth::random_token();
-    m.update_record(|r| r.client_tokens.push(token.clone()));
+/// T3 Code trades the pairing code for its token here. Since the 0.1.12 nightlies it sends a
+/// DPoP proof along, and may later trade the token itself for a fresh one; tokens here last
+/// ten years, so that gets the same token back.
+async fn oauth_token(State(m): M, headers: HeaderMap, Form(form): Form<HashMap<String, String>>) -> Response {
+    let subject = form.get("subject_token").map(String::as_str).unwrap_or_default();
+    let renewing = form.get("subject_token_type").is_some_and(|t| t == ACCESS_TOKEN_TYPE);
+    let token = if renewing {
+        if subject.is_empty() || !m.record().client_tokens.iter().any(|c| c == subject) {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid_grant"}))).into_response();
+        }
+        subject.to_owned()
+    } else {
+        if !m.auth.redeem_pairing_code(subject) {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid_grant"}))).into_response();
+        }
+        let token = auth::random_token();
+        m.update_record(|r| r.client_tokens.push(token.clone()));
+        tracing::info!("T3 Code paired with {}", m.id());
+        token
+    };
     let session = m.cache.lock().unwrap().auth_session.clone().unwrap_or_default();
     let scope = session
         .get("scopes")
@@ -142,15 +178,14 @@ async fn oauth_token(State(m): M, Form(form): Form<HashMap<String, String>>) -> 
         .unwrap_or_default();
     let mut body = json!({
         "access_token": token,
-        "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
-        "token_type": "Bearer",
+        "issued_token_type": ACCESS_TOKEN_TYPE,
+        "token_type": if headers.contains_key("dpop") { "DPoP" } else { "Bearer" },
         "expires_in": CLIENT_TOKEN_TTL_SECS,
         "scope": scope,
     });
     if let Some(p) = session.get("permissions") {
         body["permissions"] = p.clone();
     }
-    tracing::info!("T3 Code paired with {}", m.id());
     Json(body).into_response()
 }
 
@@ -417,7 +452,7 @@ async fn wake(m: &MachineRuntime, allowed: bool) -> Result<(), Response> {
     if !allowed {
         return Err(StatusCode::SERVICE_UNAVAILABLE.into_response());
     }
-    m.ensure_awake()
+    m.wake_for("T3 Code")
         .await
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response())
 }

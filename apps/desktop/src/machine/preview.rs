@@ -133,7 +133,7 @@ impl MachineRuntime {
             match kind(&head) {
                 Kind::Page => {
                     tracing::info!("waking {} for a page on port {port}", self.id());
-                    if let Err(e) = self.ensure_awake().await {
+                    if let Err(e) = self.wake_for("a preview").await {
                         return respond(&mut client, "503 Service Unavailable", &format!("{name} could not wake: {e:#}")).await;
                     }
                 }

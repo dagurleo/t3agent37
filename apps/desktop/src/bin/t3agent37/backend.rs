@@ -265,6 +265,7 @@ impl Backend {
             issue_models = machine.issue_models();
             self.rt.spawn(async move {
                 machine.refresh_servers().await;
+                machine.refresh_agents().await;
                 // Another computer may have changed them.
                 machine.refresh_settings().await;
                 machine.refresh_hooks().await;
@@ -360,7 +361,7 @@ async fn act(inner: Arc<Inner>, id: String, cmd: Cmd) -> Res<Option<String>> {
         Cmd::GithubToken(token) => return machine.sign_in_github_token(&token).await.map(Some).map_err(err),
         Cmd::Open { thread } => app.open_in_t3(&machine, thread.as_deref()),
         Cmd::Pair => app.pair(&machine),
-        Cmd::Wake => machine.ensure_awake().await,
+        Cmd::Wake => machine.wake_for("Wake in t3agent37").await,
         Cmd::Sleep => machine.sleep_now().await,
         Cmd::TurnOnConnect => machine.turn_on_connect().await,
         Cmd::KeepAwake(minutes) => machine.keep_awake(minutes).await,

@@ -126,6 +126,8 @@ static void present(NSView *view, double width, double height, double gap) {
         window.styleMask = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel | NSWindowStyleMaskFullSizeContentView;
         NSScreen *screen = status_item.button.window.screen ?: NSScreen.mainScreen;
         NSRect visible = screen.visibleFrame;
+        // A big panel never runs past the bottom of the screen.
+        height = MIN(height, NSHeight(visible) - gap - 8);
         CGFloat x = has_anchor ? NSMidX(anchor) - width / 2 : NSMaxX(visible) - width - 8;
         x = MAX(NSMinX(visible) + 6, MIN(x, NSMaxX(visible) - width - 6));
         CGFloat top = (has_anchor ? NSMinY(anchor) : NSMaxY(visible)) - gap;

@@ -20,7 +20,7 @@ What was kept and what changed:
   - Claude Code's full-access mode working as root.
   - No "Co-Authored-By: Claude" or "Generated with Claude Code" on what agents commit and open from a machine, unless its Claude settings already say otherwise.
   - T3 Code's own update ("Update N machines?") updates the machines too, instead of skipping them as "needs a manual update".
-  - A new look: "field agents" on a rooftop instead of boats.
+  - A new look: "field agents" over a night skyline instead of boats, in a quiet Graphite palette. The original animated rooftop is a setting.
   - A native panel drawn with [GPUI](https://gpui.rs) in place of t3boat's Tauri webview, so there's no JavaScript in the app (see [History](CONTRIBUTING.md#history)).
 
 ## What you get
@@ -35,6 +35,7 @@ What was kept and what changed:
 - Webhooks that wake the machine: T3 Code's scheduled tasks can run on a webhook, and each machine's details give those tasks an address that wakes it, so a Sentry alert, a Linear issue or a Zapier step starts an agent on a sleeping machine right away
 - A start URL per machine: an assistant such as Grok, a phone shortcut or a script starts threads in any of the machine's projects with plain web requests, then checks on them, reads the agent's reply and follows up. A request wakes the machine
 - Machines shared between computers: t3agent37 on another computer with the same Agent37 account lists the machines made elsewhere, and **Add here** gives that computer a sign-in of its own to one. GitHub issues and the start URL are the machine's settings, so both computers show the same
+- What each machine is doing: its details show the threads its agents work on (project, model, how long, and whether one waits for your approval), what woke it, its CPU, memory and disk with the busiest processes, and what its agents finished in the last day; a thread opens in T3 Code on click. The list says which thread is at work, which needs you, or what keeps the CPU busy
 - Notifications when a machine's agents finish, when your Agent37 wallet runs low, and when a machine stays awake for hours
 - Cost per machine, today and this month, and your wallet balance. Each machine's details also show what each of its projects cost this month: the time its agents worked, plus the idle minutes after, at the machine's hourly rate
 - An MCP server, so agents on your computer can manage machines and open their ports
@@ -108,7 +109,9 @@ For Grok Bot, which has a computer of its own, give it the address and the token
 
 To use a machine from a second computer, install t3agent37 there with the same Agent37 API key. Its list shows the machines made on other computers under **on your agent37 account**. **Add here** wakes one, signs this computer in to it with a T3 sign-in of its own, and asks T3 Code there to add it. Then both computers use it as their own: its threads and projects, sign-ins, GitHub issues, webhook tasks and start URL are the machine's. What each app shows comes from the machine whenever it's up, so a change made on one computer shows on the other the next time it sees the machine awake, and a wake from the other computer shows within a minute. Keep both copies up to date: a machine remembers which version of t3agent37 set it up, and an older one leaves a newer one's scripts alone, so nothing that one added stops working.
 
-Settings has the notifications (wallet line, hours awake, agents finishing) and whether projects get set up when they're added.
+To see what a machine is doing, open its details. While it's up, **now** lists the threads its agents work on, each with its project, model, how long it has run and what it's up to ("working", "needs your approval", "waits on subagents"), with any command it left running (a dev server). Under them: its CPU, memory and disk, and its busiest processes, which say what's behind "busy CPU"; at the top right, when it woke and what woke it (T3 Code, GitHub, the start URL, a webhook, scheduled work). **finished** lists what its agents finished in the last day; while it sleeps, as of when it went to sleep. Click a thread to open it in T3 Code.
+
+Settings has the notifications (wallet line, hours awake, agents finishing), whether projects get set up when they're added, and the look: the panel's size (Standard, Large or Huge; the expand button at the top of the list, ⌘+ and ⌘− change it while it's open) and the animated rooftop instead of the still skyline.
 
 ## Pricing, roughly
 
@@ -136,7 +139,7 @@ T3 Code ──ws──> localhost proxy (t3agent37) ──https/wss + key──>
 
 The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/architecture.md).
 
-## Status (2026-11-22)
+## Status (2026-11-23)
 
 **Works, tested live on Agent37:**
 - Creating a machine and adding it to T3 Code.
@@ -160,6 +163,7 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 - Webhooks that wake, on skiff: a delivery to a webhook task's waking URL, sent while the machine slept, was answered in 1.5 s with T3's own 202, and the task ran 0.1 s later. The app read the task from T3 and made the address. T3 took deliveries at the task's path directly: a matching one ran, a filtered one was answered 202 without a run, and a wrong token got 404. A filtered-out delivery to the sleeping machine let it sleep again 72 s later.
 - The start URL, on skiff (the machine's side, set up by hand, called with curl from a laptop): the project list in 0.6 s, a thread started in a project in its own worktree (from `origin/main`, on a branch T3 named) with the model and effort asked for, its reply read once done, a follow-up answered in the same thread, a wrong token answered 404 and a thread it didn't start refused. With the token in an `Authorization: Bearer` header instead: the list, a thread started (its `threadUrl` without the token) and its reply read; no header, a wrong token or a `Basic` one answered 404, and the token-in-the-URL form kept working.
 - Two computers on one machine (a second copy of the app's backend with its own data folder, on the same Mac): it listed skiff as on the account and no other VM, added it in 12 s (waking it) with a T3 sign-in of its own and the same watchdog key, and showed the same GitHub issue settings and start URL. Waking skiff from there provisioned it, leaving its version on the machine without restarting anything; this computer's app kept reaching skiff's watchdog, and saw the wake within a minute. Both apps put skiff to sleep as it went idle. With a newer version recorded on the machine, the second copy's provisioning changed nothing. A start URL replaced on this computer showed on the other when it next read skiff's settings.
+- What a machine is doing, on faktor (through the MCP tool; the panel section not yet seen): the threads it finished, shown while it slept, after the watchdog's update; then, woken from the app, "woke for an agent on your computer", its CPU, memory and disk, and a one-core loop as its busiest process at 100%, with the list line "Working · busy CPU · sh -c while :; do :; done". A thread at work and one waiting for approval were checked against T3's real shell fields in tests only. Then in the panel, on skiff: a demo thread showed under **now** while it worked, with the load and its busiest processes (Claude Code, then a CPU loop), and under **finished** once it was done.
 - Cost per project, on skiff: an agent turn in one project counted for it, the idle minute after it too, and the wake before it as other time; the app showed both, priced at the machine's rate.
 - Accounts per machine, on the machine's side: the account, plan and usage limits read from what T3 recorded on skiff. Starting Claude's and GitHub's logins again over an existing sign-in, then canceling, kept the old sign-in, and the login's end was recorded.
 - T3 Code's own update, on the machine's side: switching a running machine to T3's service launcher (T3 Connect came back by itself), the server then reporting that it can update itself, T3's update call taking it from one nightly to the next (back in about 5 s), provisioning afterwards with the older desktop version keeping the newer T3 without a restart, and a reboot of the boot container starting the new version.
@@ -175,12 +179,15 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 - The projects' costs and the webhooks section in the panel's details (the same figures and addresses came through the MCP tool).
 - The start URL from the panel (turning it on, replacing it, turning it off), and from Grok itself. Turning it on and replacing it worked through the MCP tool.
 - A second computer for real: the list's **on your agent37 account** section and **Add here**, and T3 Code there adding the machine.
+- A thread opening in T3 Code from the **now** and **finished** sections.
+- The Graphite look, the panel's sizes and the animated rooftop setting on screen (built and unit-tested; the mockups were reviewed).
 - A GitHub token limited to some repos, end to end: GitHub's filled-in page, the panel's field, gh on the machine with the token, the repos it lists, and pull request CI from GitHub Actions. What was tried: the machine's check of its GitHub login (on skiff, gh's own sign-in read as reaching every repo) and GitHub refusing a made-up token (401).
 - The "Update N machines?" dialog in T3 Code updating a machine through the proxy (the same update call was made on the machine itself). Also, under the launcher: creating a machine, moving one to a newer desktop version by provisioning, and turning on T3 Connect.
 
 **Known gaps:**
 - **Previews list only servers T3's agents and terminals started.** Others (Docker, a database) open by number.
 - **GitHub issues are a prototype.** Only an issue's title and description go to the agent, not its comments. On the pull request, CI counts through check runs (GitHub Actions, Cloudflare and other GitHub apps), not the older commit statuses some services post, and only the first 100 reviews and comments are read. The machine's GitHub login covers all its repos unless it's signed in with a token limited to some (**Some repos only…**). A label renamed in the settings leaves the old one in the repo.
+- **The details don't say what an agent is saying or running right now**, only its thread's state: T3's thread list leaves the latest message out. Open the thread in T3 Code for that. They also miss what T3 doesn't track and what's quick: a server an agent starts as a plain shell command (not with its agent's background option) isn't listed under its thread, and subagents that finish within the app's 5-second refresh aren't counted (both seen on skiff).
 - **Project costs are an estimate.** They're awake time at the machine's current hourly rate, so a resize reprices the month, and the disk (billed asleep too) isn't split between projects. Time with several projects' agents working is split evenly between them.
 - **Usage limits are as of the machine's last check.** T3 checks them while the machine is awake, so a sleeping machine's details say how old they are, and use of the same plan elsewhere (your laptop, another machine) shows up only at the next check.
 - **Some things stay on each computer:** notifications, ports forwarded to it, and what it recorded for T3 Code while the machine sleeps. A computer that didn't see the machine's last work wakes it once to catch up, as after a laptop was closed.

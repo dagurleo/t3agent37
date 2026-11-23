@@ -14,6 +14,7 @@ use super::kit::{self, Btn, Icon, Size};
 use super::Panel;
 use crate::backend::{Cmd, Details};
 use crate::model::{self, Action, machine_key, pixel_state};
+use crate::pixel::flat::{SPY_H, SPY_W, paint_flat_spy};
 use crate::pixel::paint::{ICON_H, ICON_W, paint_spy_icon};
 use crate::pixel::{Px, seed_of};
 use crate::theme::{DISPLAY, MONO, Tokens};
@@ -30,6 +31,13 @@ impl Panel {
         let primary = model::primary_action(m).unwrap_or_else(|| if m.paired { model::open_in(latest) } else { model::pair() });
 
         let mut body: Vec<AnyElement> = vec![self.glance(m, d.as_ref(), &tk, window).into_any_element()];
+        // What it's doing, from its watchdog: while it's up, and what it finished before it slept.
+        if let Some(a) = m.activity.clone().filter(|_| !gone) {
+            if a.live {
+                body.push(self.now(m, &a, &tk, cx).into_any_element());
+            }
+            body.push(self.finished(m, &a, &tk, cx).into_any_element());
+        }
         if !gone {
             body.push(self.power(m, busy, &tk, cx).into_any_element());
         }
@@ -107,7 +115,8 @@ impl Panel {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .child(sub_header(&m.name, &tk, cx))
+            // The still header has the back button and the title itself.
+            .when(self.state.settings.animated_rooftop, |d| d.child(sub_header(&m.name, &tk, cx)))
             .child(
                 // The picker scrolls this by hand (see `open_picker`), so it has its own handle;
                 // the bar sits on top, outside what scrolls.
@@ -146,9 +155,18 @@ impl Panel {
         let size = model::size_of(self.state.sizes, &m.size);
         let t = self.t();
 
-        let mut icon = Px::new(ICON_W, ICON_H);
-        paint_spy_icon(&mut icon, crate::theme::theme_of(window), pixel_state(m.state), seed_of(&machine_key(m)), self.clock());
-        let icon = self.image(&icon, (3. * window.scale_factor()).round() as usize);
+        // The walking agent with the animated rooftop; else a still spy in a smaller box.
+        let icon = if self.state.settings.animated_rooftop {
+            let mut buf = Px::new(ICON_W, ICON_H);
+            paint_spy_icon(&mut buf, crate::theme::theme_of(window), pixel_state(m.state), seed_of(&machine_key(m)), self.clock());
+            let image = self.image(&buf, (3. * window.scale_factor()).round() as usize);
+            div().flex_none().w(px(80.)).h(px(70.)).flex().items_center().justify_center().bg(tk.panel).child(kit::pixels(image, 72., 63.))
+        } else {
+            let mut buf = Px::new(SPY_W, SPY_H);
+            paint_flat_spy(&mut buf, pixel_state(m.state), &super::header::flat(tk));
+            let image = self.image(&buf, (3. * window.scale_factor()).round() as usize);
+            div().flex_none().w(px(52.)).h(px(52.)).flex().items_center().justify_center().bg(tk.panel).child(kit::pixels(image, 33., 39.))
+        };
 
         let (head_color, rest_color) = match m.state {
             State::Working => (tk.accent_text, tk.accent_text),
@@ -183,7 +201,7 @@ impl Panel {
                     .items_center()
                     .gap(px(14.))
                     .p(px(12.))
-                    .child(div().flex_none().w(px(80.)).h(px(70.)).flex().items_center().justify_center().bg(tk.panel).child(kit::pixels(icon, 72., 63.)))
+                    .child(icon)
                     .child(
                         div()
                             .flex()
@@ -205,7 +223,7 @@ impl Panel {
                                     .child(headline),
                             )
                             .when(!rest.is_empty(), |d| {
-                                d.child(div().font_family(MONO).text_size(px(11.5)).line_height(relative(1.35)).text_color(rest_color).child(rest.join(" · ")))
+                                d.child(div().text_size(px(12.5)).line_height(relative(1.35)).text_color(rest_color).child(rest.join(" · ")))
                             })
                             .child(
                                 div()

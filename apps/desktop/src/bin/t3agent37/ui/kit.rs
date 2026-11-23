@@ -23,6 +23,8 @@ pub enum Btn {
     Icon,
     /// The settings button on the sky.
     OnSky,
+    /// A square icon button on the still header's night.
+    SkyIcon,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -76,6 +78,7 @@ pub fn button(id: impl Into<ElementId>, kind: Btn, size: Size, disabled: bool, t
             .text_color(rgb(0xffffff))
             .border_color(rgba(0xffffff73))
             .hover(|s| s.bg(rgba(0xffffff29))),
+        Btn::SkyIcon => b.w(px(28.)).px_0().text_color(tk.sky_muted).when(live, |b| b.hover(|s| s.bg(rgba(0xffffff1f)))),
     }
 }
 
@@ -110,6 +113,10 @@ pub enum Icon {
     ChevronUp,
     Open,
     Alert,
+    /// Corners pointing out: a bigger panel.
+    Expand,
+    /// Corners pointing in: back to the standard size.
+    Shrink,
 }
 
 fn rows(icon: Icon) -> [&'static str; 8] {
@@ -124,6 +131,8 @@ fn rows(icon: Icon) -> [&'static str; 8] {
         Icon::ChevronUp => ["........", "........", "...##...", "..####..", ".##..##.", "##....##", "........", "........"],
         Icon::Open => ["..######", "......##", ".....###", "....##.#", "...##..#", "..##....", ".##.....", "##......"],
         Icon::Alert => ["...##...", "...##...", "...##...", "...##...", "...##...", "........", "...##...", "...##..."],
+        Icon::Expand => ["####....", "##......", "#.#.....", "#..#....", "....#..#", ".....#.#", "......##", "....####"],
+        Icon::Shrink => ["#..#....", ".#.#....", "..##....", "####....", "....####", "....##..", "....#.#.", "....#..#"],
     }
 }
 
@@ -245,7 +254,7 @@ pub fn section_head(title: &str, n: Option<usize>, extra: Option<AnyElement>, tk
         .items_center()
         .gap(px(8.))
         .min_h(px(20.))
-        .child(caption(tk).flex().items_center().child(title.to_string()).children(n.filter(|n| *n > 0).map(|n| count(n, tk))))
+        .child(div().flex().items_center().text_size(px(11.5)).line_height(relative(1.2)).text_color(tk.muted).child(title.to_string()).children(n.filter(|n| *n > 0).map(|n| count(n, tk))))
         .child(div().flex_1().h(px(1.)).bg(tk.line))
         .children(extra)
 }
@@ -274,10 +283,9 @@ pub fn ok(text: impl Into<SharedString>, tk: &Tokens) -> Div {
         .flex_none()
         .items_center()
         .gap(px(5.))
-        .font_family(MONO)
-        .text_size(px(11.))
-        .text_color(tk.accent_text)
-        .child(icon(Icon::Check, 10., tk.accent_text))
+        .text_size(px(11.5))
+        .text_color(tk.ok)
+        .child(icon(Icon::Check, 10., tk.ok))
         .child(text.into())
 }
 

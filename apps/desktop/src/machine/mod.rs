@@ -1,6 +1,7 @@
 //! One remote machine at runtime: its power state on Agent37, its watchdog, waking it on demand
 //! and capturing its final state when it goes to sleep.
 
+pub mod activity;
 mod capture;
 mod connect;
 pub mod hooks;
@@ -133,6 +134,9 @@ pub struct WatchdogStatus {
     /// Awake time by project this month and today. Older watchdogs don't say.
     #[serde(default)]
     pub usage: Option<ProjectUsage>,
+    /// What it's doing: its agents' threads, what they finished, its load. Older watchdogs don't say.
+    #[serde(default)]
+    pub activity: Option<activity::Activity>,
     /// When this app got the status: what its second counts are relative to.
     #[serde(skip, default = "SystemTime::now")]
     pub received: SystemTime,
@@ -229,6 +233,10 @@ pub struct MachineRuntime {
     forwards: Mutex<HashMap<u16, preview::Forward>>,
     /// The servers T3 found listening on it, as last read, and when.
     servers: Mutex<(Vec<preview::LocalServer>, Option<Instant>)>,
+    /// What it was doing at the watchdog's last report, and when that was: kept while it sleeps.
+    last_activity: Mutex<Option<(activity::Activity, SystemTime)>>,
+    /// Why this app is waking it, for the watchdog's "woke for" (`wake_for`).
+    wake_why: Mutex<Option<&'static str>>,
 }
 
 /// Marks a provisioning as running for as long as it's held, so the panel can say so.
@@ -283,6 +291,8 @@ impl MachineRuntime {
             models_seen: Mutex::new(Vec::new()),
             forwards: Mutex::new(HashMap::new()),
             servers: Mutex::new((Vec::new(), None)),
+            last_activity: Mutex::new(None),
+            wake_why: Mutex::new(None),
         };
         if let Some(shell) = shell {
             this.set_projects_from(&shell);
@@ -382,6 +392,30 @@ impl MachineRuntime {
 
     pub fn watchdog_status(&self) -> Option<WatchdogStatus> {
         self.watchdog.lock().unwrap().clone()
+    }
+
+    /// What it was doing at the watchdog's last report, and when that came: while it's up, as of
+    /// seconds ago; asleep, as it went to sleep. None until a watchdog that reports it was seen.
+    pub fn activity(&self) -> Option<(activity::Activity, SystemTime)> {
+        self.last_activity.lock().unwrap().clone()
+    }
+
+    fn keep_activity(&self, s: &WatchdogStatus) {
+        if let Some(a) = &s.activity {
+            *self.last_activity.lock().unwrap() = Some((a.clone(), s.received));
+        }
+    }
+
+    /// `ensure_awake`, saying what for: the machine's details then say what woke it ("T3 Code",
+    /// "scheduled work"). A wake that was already under way keeps its own reason.
+    pub async fn wake_for(&self, why: &'static str) -> Result<()> {
+        if self.power() != Power::Running {
+            self.wake_why.lock().unwrap().get_or_insert(why);
+        }
+        let result = self.ensure_awake().await;
+        // Used by the wake, or not needed: either way not for a later one.
+        self.wake_why.lock().unwrap().take();
+        result
     }
 
     /// Long enough for any stop to finish; a stop still pending after this failed.
@@ -788,8 +822,10 @@ impl MachineRuntime {
         *self.last_heartbeat.lock().unwrap() = Some(Instant::now());
         // Going quiet is not final on the VM: activity calls it off there, so a failure here
         // only means the watchdog wasn't reached. The run loop's next look decides.
-        match self.watchdog_post("/activity", json!({ "resumed": resumed })).await {
+        let by = if resumed { self.wake_why.lock().unwrap().take() } else { None };
+        match self.watchdog_post("/activity", json!({ "resumed": resumed, "by": by })).await {
             Ok(s) => {
+                self.keep_activity(&s);
                 *self.watchdog.lock().unwrap() = Some(s);
                 self.shared.changed();
             }
@@ -1001,6 +1037,7 @@ impl MachineRuntime {
         }
         let manifest = s.manifest.clone();
         let phase = s.phase;
+        self.keep_activity(&s);
         *self.watchdog.lock().unwrap() = Some(s);
         self.shared.changed();
         match (phase, manifest) {
@@ -1109,7 +1146,7 @@ impl MachineRuntime {
             {
                 last_due_wake = Some(Instant::now());
                 tracing::info!("waking {} for work due", self.id());
-                if let Err(e) = self.ensure_awake().await {
+                if let Err(e) = self.wake_for("scheduled work").await {
                     tracing::warn!("waking {} for work due: {e:#}", self.id());
                 }
             }
@@ -1129,6 +1166,7 @@ impl MachineRuntime {
                             this.refresh_projects().await;
                             this.refresh_connect().await;
                             this.refresh_github().await;
+                            this.refresh_agents().await;
                             // Before the hooks: they keep the inbox URL only for what's on.
                             this.refresh_settings().await;
                             this.refresh_hooks().await;

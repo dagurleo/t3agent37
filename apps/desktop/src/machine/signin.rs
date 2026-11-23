@@ -473,6 +473,23 @@ impl MachineRuntime {
         }
     }
 
+    /// The agents' sign-in status read from the machine's T3 itself, when this app has none: T3
+    /// Code shows it a machine's config only once it has opened the machine, so a new one had no
+    /// agents to sign in. Only while it runs: never wakes it.
+    pub async fn refresh_agents(&self) {
+        if !self.up_for_background() || !self.cache.lock().unwrap().providers().is_empty() {
+            return;
+        }
+        match upstream::call(&self.upstream_url(), &self.upstream_token(), "server.getConfig", serde_json::json!({})).await {
+            Ok(config) => {
+                self.cache.lock().unwrap().fold_providers(&config["providers"]);
+                self.save_cache();
+                self.shared.changed();
+            }
+            Err(e) => tracing::debug!("reading {}'s agents: {e:#}", self.id()),
+        }
+    }
+
     /// After a sign-in as another account: the old one is signed out of gh, which kept it.
     async fn sign_out_github(&self, before: Option<String>) {
         let after = self.record().github_login;

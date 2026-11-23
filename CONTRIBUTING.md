@@ -13,6 +13,7 @@ Bug reports and pull requests are welcome. For a security problem, see [SECURITY
 - **Remember that any request to a sleeping VM's public URL wakes it** (and bills it). Nothing in the app should talk to a sleeping machine unless it means to wake it.
 - **Run one t3agent37 at a time.** A second copy would share the data folder, ports and machines, so it refuses to start while port 47370 is taken.
 - **Don't rebuild the binary a running copy runs from.** macOS kills a process whose signed binary changes underneath it (no crash report). Run the bundle, or a copy of `target/debug/t3agent37`.
+- **Take a value out of a `Mutex` in a `let` before a struct literal that locks it again.** A guard made in one field (`m.cache.lock().unwrap().signed_in_providers()`) lives until the whole literal is built, so a later field that takes the same lock deadlocks. That froze the whole app once, in `app::view`.
 
 ## Build, install, test (macOS)
 
@@ -24,6 +25,7 @@ scripts/bundle-macos.sh --install   # release build → target/release/bundle, c
 scripts/bundle-macos.sh --open      # the same, opened from target/release/bundle instead
 cargo run -- --open                 # a debug build, panel open at launch (quit the bundled one first)
 cargo test                          # backend and panel tests
+(cd src/machine && node --test *.test.mjs)   # the machine's scripts (issues, start URL, activity)
 cargo run --bin t3agent37-dev       # the backend alone, driven from stdin (see the file's header)
 ```
 
@@ -79,6 +81,7 @@ apps/desktop/                 the app: one Rust package (library = the backend, 
       issues.rs, issues.mjs   GitHub issues as threads: the webhook, and the inbox on the VM (in the watchdog)
       hooks.rs                T3's webhook tasks, at addresses that wake the machine
       start.rs, start.mjs     the start URL: threads in its projects from anywhere, over HTTPS (served by the inbox)
+      activity.rs, .mjs       what a machine is doing: its threads, what finished, what woke it, its load (in the watchdog's status)
       shared.rs               a machine used from several computers: adding one made elsewhere, its settings read from it
       preview.rs              a machine's ports at localhost here, through T3's preview tunnel
       setup-project.sh        on the VM: a newly added project's setup (its T3 scripts, or its lockfile)
@@ -93,8 +96,8 @@ apps/desktop/                 the app: one Rust package (library = the backend, 
       model.rs                what the panel does with a machine: actions, labels, numbers
       theme.rs                brand tokens and fonts
       macos.rs, macos/shell.m status item, panel placement, notifications, login item, updates (Objective-C, after F2)
-      ui/                     the panel: mod.rs (views, toasts, commands), rooftop, list, details, forms, settings, kit
-      pixel/                  the rooftop's pixel engine: palette, scene, spy sprites
+      ui/                     the panel: mod.rs (views, toasts, commands), header (still skyline), rooftop (animated), list, details, now (a machine's activity), forms, settings, kit
+      pixel/                  the pixel engine: palette, scene, spy sprites (the rooftop), flat (the still look)
   assets/fonts/               Inter, Funnel Display, IBM Plex Mono (OFL), embedded
   icons/                      tray.png, tray@2x.png (menu-bar template), app-icon.png, icon.icns
   scripts/                    bundle-macos.sh (the app), release-macos.sh (signed, notarized DMG and appcast), make_icons.py
@@ -197,7 +200,11 @@ These were checked on `agent37-ubuntu` VMs in November 2026. Several contradict 
 - **Server settings:** `server.getSettings` and `server.updateSettings {patch}` take the proxy's token. A patch merges record fields by key (`{projectScriptOverrides: {}}` changes nothing), and `null` removes a key. `requireConnectDeviceApproval` is the "Require approval for new T3 Connect devices" switch. T3 Connect's `preferences` hold only `publishAgentActivity` (phone push and Live Activities) and `holdWebhooksWhileOffline`.
 - **Project scripts live in two places:** the project's own (the shell's `scripts`) and the server's settings, where T3 Code's script editor saves them (`projectSettingsOverrides[projectId].defaultProjectScripts`; the older `projectScriptOverrides[projectId]` key is still accepted and translated, and `getSettings` derives it back). `orchestration.dispatchCommand` takes no `project.*` command from a client, so `copy_scripts` writes the settings, and reads them here first (`T3Desktop::project_scripts`; t3agent37's read-only session may).
 - **Which address a machine's T3 issues link tokens for:** its OAuth `resource` is the origin of the request as it arrives, so through Agent37's edge it was the public hostname until T3 0.1.12 and is now the VM's internal address (`https://10.x.x.x:3773/mcp`; `x-forwarded-host` doesn't change it). A link asking for any other address fails with `PeerLinkError: This server only issues tokens for …`. T3 checks `resource` only at the approval and the token request, a missing one passes both, and the session it issues isn't bound to an address (`/mcp` checks only the session). So `proxy/link.rs` drops `resource` from both steps, which also survives the VM's address changing.
+- **T3 Code pairs with DPoP since the 0.1.12 nightlies.** 0.1.12-nightly.20261122.5071 sends a `dpop` proof with the pairing exchange, then `Authorization: DPoP <token>` (plus a proof) on every request; environments paired with an older T3 Code keep sending `Bearer`. The proxy read only `Bearer`, so faktor, added on 2026-11-22, got 401 on every websocket ticket and stayed "Reconnecting…" in T3 Code while skiff worked. It takes both now (`proxy::auth::bearer`), without checking the proof, and answers T3 Code's renewal (the access token traded for a new one) with the same token. Details in `docs/t3-protocol.md` §1.3.
+- **`projects.listIgnoredFiles` lists 200 ignored files at most** (`truncated: true` past that), sorted by path, from `git ls-files --others --ignored --exclude-standard --directory`. In a big monorepo, build output and logs filled the 200 before any `apps/*/.env`, so only the top-level `.env` reached the machine. Its `query`, a case-insensitive path substring, applies before the cap: t3agent37 asks for `.env` and `.dev.vars`.
+- **A project whose clone fails stays in T3, empty.** `projectClone.start` registers the project before cloning, and a failed clone (a private repo on a machine with no GitHub access yet) leaves it there with an empty folder: on 2026-11-22 two projects added to a new machine before its GitHub sign-in were left that way. t3agent37 now removes such a project (`t3 project remove <id>`, which refuses one with threads) and its folder if empty. A later `projectClone.start` to the same destination clones into the project that owns it.
 - **`t3 thread show <id> --json`** (`--messages N` for the latest N) answers `{thread, messages: [{role, runId, text}]}`; `thread` has `status`, `activeRunId`, `pendingRequestCount` and `link`, T3's own address for the thread (`https://app.t3.codes/threads/<environment>/<thread>`). `start.mjs` doesn't count a thread as done while its latest message is the user's, in case a follow-up's run hasn't started yet. `t3 thread start --worktree <ref>` without `--branch` names the branch itself (`t3/<slug>`), and `--generate-title` titles the thread from the message. Each `t3` command takes about 3 s on a large machine (Node starting).
+- **A thread's live state is in the shell snapshot** (`/api/orchestration/shell`, protocol 2), for every thread: `activityRunStatus` (`preparing`, `starting`, `running`, `waiting`, or null), `activityRunStartedAt`, `status` (the latest run's: `queued` … `completed`, `interrupted`, `failed`, `cancelled`, `rolled_back`, or `idle`), `pendingRuntimeRequest` (`{kind, blocking, userOnly}`; `kind` is a provider's approval kind, `user_input`, `auth_refresh` or `dynamic_tool_call`; `blocking: false` is a question the run works past), `blockedOnThreadWait`, `pendingBackgroundTasks` (`[{kind: subagent | command | monitor | background_task, command?, description?}]`), `modelSelection` (`{instanceId, model, options: [{id, value}]}`), `latestRunCompletedAt`, `latestRunStopRequested`, `lastError`, `branch` and `worktreePath`; subagents have `lineage.relationshipToParent: "subagent"` and their `rootThreadId`. `latestVisibleMessage` is always null there (T3 sets it so), so what an agent is saying right now isn't in it.
 - **Projects live in T3's database too:** `projection_projects` in `~/.t3/userdata/statev2.sqlite` has `project_id`, `title`, `workspace_root`, `default_model_selection_json` (null when the project has no default model), `archived_at` and `deleted_at`.
 - **A webhook task's prompt can quote the request:** `{{body.path}}`, `{{headers.name}}`, `{{query.name}}`, `{{body}}` and `{{request}}`. T3 puts each value in `<webhook-data-…>` tags and adds a line telling the agent to treat it as untrusted data; on skiff, Claude Opus 5.5 still did what a task's own prompt said to do with it.
 - **`t3 thread start <project> <message>`** works on a machine over exec (`--provider claudeAgent --model ...` when the project has no default model; `--wait` prints the reply). Handy for tests.
@@ -213,10 +220,15 @@ These were checked on `agent37-ubuntu` VMs in November 2026. Several contradict 
 
 ## Design
 
-The panel's theme is "field agents", in the "Noir amber" palette (light and dark).
+The panel's theme is "field agents", in the "Graphite" palette (light and dark): neutral greys, coral only where something is happening. It was toned down from the animated "Noir amber" rooftop on 2026-11-22, because the moving pixel art got in the way of real work. The site and the app icon are still Noir amber.
 
-**The rooftop strip**
-- The panel's top strip is a pixel-art city rooftop: a skyline, a searchlight at night, a beacon by day, and a gravel roof.
+**The still look (the default)**
+- The panel's top is a still night skyline (`ui/header.rs`, `pixel/flat.rs`): flat buildings with a few lit windows, two points a pixel, drawn for the panel's width. On the list it carries the brand, a summary ("1 working · 2 idle · 1 asleep") and the size and settings buttons; on the other views, the back button and the view's title, so they have no header of their own.
+- Each machine is a small flat spy (11×13 pixels, three points each) whose coat shows its state: coral working, grey idle, faint asleep (with a "z"), red on an error. Nothing moves.
+- Status lines are in Inter; IBM Plex Mono is kept for chips, numbers and small print.
+
+**The animated rooftop** (Settings → look → Animated rooftop)
+- A pixel-art city rooftop: a skyline, a searchlight at night, a beacon by day, and a gravel roof.
 - Each machine is a spy in a fedora, coat and shades. The spy's pose shows the machine's state:
 
 | state | pose |
@@ -230,8 +242,11 @@ The panel's theme is "field agents", in the "Noir amber" palette (light and dark
 - New machines get codenames (raven, falcon, kestrel, …).
 
 **Code and tokens**
-- The engine is in `src/bin/t3agent37/pixel/`: bayer dithering and ramps, redrawn on the panel's 12 fps clock. `scene.rs` draws the roof, `spy.rs` the agents and `paint.rs` the strip and row icons.
-- Brand tokens are in `theme.rs`. The accent is `#c2581f` in light mode and `#ffb547` in dark. Body text is Inter, display Funnel Display SemiBold, small print IBM Plex Mono.
+- The engine is in `src/bin/t3agent37/pixel/`: bayer dithering and ramps, redrawn on the panel's 12 fps clock. `scene.rs` draws the roof, `spy.rs` the agents and `paint.rs` the strip and row icons; `flat.rs` the still skyline and spies.
+- Tokens are in `theme.rs`, including the still header's night (`sky*`) and the spies' colours. The accent is `#d4552b` in light mode and `#ff8a5c` in dark; danger is a red apart from it. Body text is Inter, display Funnel Display SemiBold, small print IBM Plex Mono.
+
+**Sizes**
+- The panel opens Standard (380×560), Large (460×760) or Huge (580×940), as Settings remembers; the expand button on the list's header, ⌘+ and ⌘− change it while it's open, ⌘0 puts it back. It grows down and to both sides of the menu-bar item and never past the bottom of the screen (`shell.m` caps the height). The views are fluid; the skyline and the rooftop are drawn for the panel's width.
 
 **Icons**
 - To redraw them, run `python3 apps/desktop/scripts/make_icons.py <out-dir>` (standard library only).

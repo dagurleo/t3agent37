@@ -539,7 +539,7 @@ async function catchUp(hooks) {
  * soon after a delivery it ignored; returns `catchUp`, which the watchdog calls once T3 first
  * answers and after every wake.
  */
-export function startInbox({ touch, log, wokeForNothing = () => {} }) {
+export function startInbox({ touch, log, wokeForNothing = () => {}, noteWake = () => {} }) {
   const hooks = { touch, log };
   const handleStart = startHandler();
   let queue = Promise.resolve();
@@ -577,12 +577,16 @@ export function startInbox({ touch, log, wokeForNothing = () => {} }) {
     req.on("end", () => {
       if (size > MAX_BODY) return refuse(413, "too large");
       const body = Buffer.concat(chunks);
-      if (req.url?.startsWith(HOOKS_PREFIX)) return forwardHook(req, body, res, { log, wokeForNothing });
+      if (req.url?.startsWith(HOOKS_PREFIX)) {
+        noteWake("a webhook");
+        return forwardHook(req, body, res, { log, wokeForNothing });
+      }
       if (isStartPath(req.url)) return handleStart(req, body, res, { touch, log, wokeForNothing, run, waitForT3, machineName: machineName() });
       if (req.method !== "POST") return refuse(405, "POST only");
       const { repos } = readConfig();
       const repo = Object.keys(repos).find((r) => signedWith(repos[r].secret, body, req.headers["x-hub-signature-256"]));
       if (!repo) return refuse(401, "bad signature");
+      noteWake(`GitHub: ${repo}`);
       let event;
       try {
         event = JSON.parse(body);

@@ -12,6 +12,7 @@ const PROVISION_SH: &str = include_str!("provision.sh");
 const WATCHDOG_MJS: &str = include_str!("watchdog.mjs");
 const ISSUES_MJS: &str = include_str!("issues.mjs");
 const START_MJS: &str = include_str!("start.mjs");
+const ACTIVITY_MJS: &str = include_str!("activity.mjs");
 /// This app's version, which provisioning leaves on the machine so an older t3agent37 on another
 /// computer doesn't put its older scripts back.
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -30,7 +31,7 @@ pub const INBOX_PORT: u16 = 3777;
 
 /// Identifies the provisioning scripts; a machine provisioned with others gets them on wake.
 pub fn revision() -> String {
-    let scripts = PROVISION_SH.bytes().chain(WATCHDOG_MJS.bytes()).chain(ISSUES_MJS.bytes()).chain(START_MJS.bytes());
+    let scripts = PROVISION_SH.bytes().chain(WATCHDOG_MJS.bytes()).chain(ISSUES_MJS.bytes()).chain(START_MJS.bytes()).chain(ACTIVITY_MJS.bytes());
     let hash = fnv1a(scripts.chain(SLEEP_AFTER_SECS.to_string().bytes()));
     format!("{hash:016x}")
 }
@@ -158,11 +159,13 @@ pub async fn run(
         "set -e; d=$(mktemp -d); trap 'rm -rf \"$d\"' EXIT\n\
          echo {p} | base64 -d > \"$d/provision.sh\"; echo {w} | base64 -d > \"$d/watchdog.mjs\"\n\
          echo {i} | base64 -d > \"$d/issues.mjs\"; echo {st} | base64 -d > \"$d/start.mjs\"\n\
+         echo {ac} | base64 -d > \"$d/activity.mjs\"\n\
          T3A37_SECRET={s} bash \"$d/provision.sh\" {v} {sleep} {hb} {mint} {name} {app}\n",
         p = b64(PROVISION_SH),
         w = b64(WATCHDOG_MJS),
         i = b64(ISSUES_MJS),
         st = b64(START_MJS),
+        ac = b64(ACTIVITY_MJS),
         v = shell_word(t3_version)?,
         s = shell_word(watchdog_secret)?,
         sleep = SLEEP_AFTER_SECS,

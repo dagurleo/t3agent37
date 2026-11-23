@@ -9,7 +9,7 @@ use t3agent37_lib::app::Setup;
 use super::kit::{self, Btn, Icon, Size};
 use super::{Panel, STRIP_EASE, View};
 use crate::model::{machine_key, pixel_state};
-use crate::pixel::paint::{Agent, STRIP_W, paint_roof, roof_for};
+use crate::pixel::paint::{Agent, paint_roof, roof_for};
 use crate::pixel::{MachineState, Px, Theme};
 use crate::theme::{DISPLAY, MONO, Tokens};
 
@@ -45,8 +45,9 @@ impl Panel {
         from + (to - from) * ease(p)
     }
 
-    pub(super) fn render_strip(&mut self, theme: Theme, tk: &Tokens, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    pub(super) fn render_rooftop(&mut self, theme: Theme, tk: &Tokens, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let height = self.strip_height();
+        let strip_w = f32::from(window.viewport_size().width);
         if height != self.strip.1 {
             window.request_animation_frame();
         }
@@ -79,7 +80,7 @@ impl Panel {
         let picking = ready && self.view != View::New;
 
         let dpr = window.scale_factor() as f64;
-        let roof = roof_for(agents.len(), dpr);
+        let roof = roof_for(agents.len(), dpr, strip_w as f64);
         let mut buffer = Px::new(roof.w, roof.h);
         let painted: Vec<Agent> = agents.iter().map(|a| Agent { key: &a.key, state: a.state }).collect();
         let anchors = paint_roof(&mut buffer, &roof, theme, &painted, self.clock());
@@ -93,8 +94,8 @@ impl Panel {
             if let Some(i) = active.as_ref().and_then(|k| agents.iter().position(|a| &a.key == k)) {
                 let x = roof.spots[i].cx as f32 * scale;
                 let left = -f32::from(self.roof_scroll.offset().x);
-                if x < left + FOLLOW_MARGIN || x > left + STRIP_W as f32 - FOLLOW_MARGIN {
-                    let to = (x - STRIP_W as f32 / 2.).clamp(0., (world_w - STRIP_W as f32).max(0.));
+                if x < left + FOLLOW_MARGIN || x > left + strip_w - FOLLOW_MARGIN {
+                    let to = (x - strip_w / 2.).clamp(0., (world_w - strip_w).max(0.));
                     self.roof_scroll.set_offset(point(px(-to), px(0.)));
                 }
             }
@@ -184,7 +185,7 @@ impl Panel {
                     // a mouse wheel scrolls the roof sideways
                     let d = e.delta.pixel_delta(px(16.));
                     if d.y.abs() > d.x.abs() {
-                        let max = (world_w - STRIP_W as f32).max(0.);
+                        let max = (world_w - strip_w).max(0.);
                         let x = (f32::from(handle.offset().x) + f32::from(d.y)).clamp(-max, 0.);
                         handle.set_offset(point(px(x), px(0.)));
                         cx.notify();
@@ -227,7 +228,7 @@ impl Panel {
         div()
             .relative()
             .flex_none()
-            .w(px(STRIP_W as f32))
+            .w(px(strip_w))
             .h(px(height))
             .overflow_hidden()
             .child(scroller)

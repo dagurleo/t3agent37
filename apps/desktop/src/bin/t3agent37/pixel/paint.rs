@@ -5,8 +5,7 @@ use super::scene::{Rect, draw_scene, js_round};
 use super::spy::{Anchor, draw_spy, pose_for};
 use super::{CLEAR, MachineState, Px, Theme, hash, ramp, seed_of};
 
-/// The strip's size in points.
-pub const STRIP_W: f64 = 380.;
+/// The strip's height in points; it's as wide as the panel.
 pub const STRIP_H: f64 = 148.;
 const MARGIN: f64 = 18.;
 const SLOT: f64 = 19.;
@@ -31,13 +30,14 @@ pub struct Roof {
     pub spots: Vec<Spot>,
 }
 
-/// Zoom and room for `n` agents on a `dpr` screen, as `roofFor`.
-pub fn roof_for(n: usize, dpr: f64) -> Roof {
+/// Zoom and room for `n` agents on a `dpr` screen, on a strip `strip_w` points wide (the
+/// panel's width), as `roofFor`.
+pub fn roof_for(n: usize, dpr: f64, strip_w: f64) -> Roof {
     let scales: &[f64] = if (1.5 * dpr).fract() == 0. { &[2., 1.5, 1.] } else { &[2., 1.] };
     let need = 2. * MARGIN + n as f64 * SLOT;
-    let scale = scales.iter().copied().find(|s| need <= (STRIP_W / s).floor()).unwrap_or(1.);
+    let scale = scales.iter().copied().find(|s| need <= (strip_w / s).floor()).unwrap_or(1.);
     let k = 2. / scale;
-    let fit = (STRIP_W / scale).ceil();
+    let fit = (strip_w / scale).ceil();
     let scrolls = need > fit;
     let w = if scrolls { 2. * MARGIN + n as f64 * SCROLL_SLOT } else { fit };
     let slot = (w - 2. * MARGIN) / n.max(1) as f64;

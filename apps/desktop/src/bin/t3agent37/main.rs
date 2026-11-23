@@ -20,7 +20,7 @@ use t3agent37_lib::mcp::MCP_PORT;
 
 use crate::backend::{Backend, Signal};
 use crate::macos::Click;
-use crate::ui::{HEIGHT, Panel, WIDTH};
+use crate::ui::Panel;
 
 /// The app's one panel (made at its first opening, then kept) and whether it shows.
 struct Shell {
@@ -129,18 +129,20 @@ fn toggle(cx: &mut App) {
     }
 }
 
-/// Shows the panel under the menu-bar item, making it the first time.
+/// Shows the panel under the menu-bar item, at the size Settings remembers, making it the
+/// first time.
 fn show(cx: &mut App) {
+    let (w, h) = cx.global::<Shell>().backend.state().settings.panel_size.dims();
     if let Some((handle, panel)) = cx.global::<Shell>().panel.clone() {
         cx.global_mut::<Shell>().visible = true;
         let _ = handle.update(cx, |_, window, cx| {
             panel.update(cx, |p, cx| p.set_visible(true, window, cx));
-            macos::present_panel(window, WIDTH, HEIGHT);
+            macos::present_panel(window, w, h);
         });
         return;
     }
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds { origin: point(px(0.), px(0.)), size: size(px(WIDTH), px(HEIGHT)) })),
+        window_bounds: Some(WindowBounds::Windowed(Bounds { origin: point(px(0.), px(0.)), size: size(px(w), px(h)) })),
         titlebar: None,
         kind: WindowKind::PopUp,
         is_movable: false,
@@ -160,7 +162,7 @@ fn show(cx: &mut App) {
             cx.defer(move |cx| {
                 let _ = handle.update(cx, |_, window, cx| {
                     panel.update(cx, |p, cx| p.set_visible(true, window, cx));
-                    macos::present_panel(window, WIDTH, HEIGHT);
+                    macos::present_panel(window, w, h);
                 });
             });
         }

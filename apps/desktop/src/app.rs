@@ -2,7 +2,8 @@
 //! both drive it.
 
 use crate::agent37::Agent37;
-use crate::machine::{provision, Event, MachineRuntime, Power, Shared, WatchdogPhase};
+use crate::machine::activity::{needs_you, ActivityView};
+use crate::machine::{provision, Event, MachineRuntime, Power, Shared, WatchdogPhase, WatchdogStatus};
 use crate::proxy;
 use crate::store::{Settings, Spend, State, Store};
 use crate::t3desktop::T3Desktop;
@@ -78,6 +79,10 @@ pub struct MachineView {
     pub github_code: Option<String>,
     /// The agent whose sign-in runs, until it's done or canceled.
     pub signing_in: Option<String>,
+    /// What it's doing, or did before it went to sleep (the details' "now"); machine_details
+    /// gives it to agents.
+    #[serde(skip)]
+    pub activity: Option<ActivityView>,
 }
 
 /// `detail` as `template` with `{left}` filled in: the time left until `ends_at` (unix ms).
@@ -598,7 +603,8 @@ impl App {
                 keep_awake_until: None,
                 keep_awake_forever: false,
                 github_code: None,
-            signing_in: None,
+                signing_in: None,
+                activity: None,
             });
         }
         views
@@ -744,6 +750,9 @@ pub struct MachineDetails {
     pub webhooks: Vec<Webhook>,
     /// Its start URL, while it's on.
     pub start: Option<StartInfo>,
+    /// What it's doing: threads at work and what each is up to, what finished lately, what woke
+    /// it, its load and busiest processes. Asleep, as it was before it went to sleep.
+    pub activity: Option<ActivityView>,
 }
 
 /// A machine's start URL (`machine/start.rs`), which starts threads in its projects from anywhere.
@@ -850,6 +859,7 @@ impl App {
         let record = machine.record();
         let usage = self.usage(&machine);
         let providers = machine.cache.lock().unwrap().providers();
+        let activity = activity_view(&machine);
         Ok(MachineDetails {
             id,
             cost_today: usage.today,
@@ -912,6 +922,7 @@ impl App {
                 default_model: machine.start_agent(),
             }),
             previews: record.previews,
+            activity,
         })
     }
 
@@ -970,6 +981,9 @@ impl App {
 fn view(m: &MachineRuntime) -> MachineView {
     let r = m.record();
     let watchdog = m.watchdog_status();
+    // Before the struct below: a lock taken in one of its fields is held until it's built, and
+    // this takes the same ones.
+    let activity = activity_view(m);
     let mut countdown = None;
     let mut count_down = |template, secs, from| {
         let c = Countdown::new(template, secs, from);
@@ -982,8 +996,8 @@ fn view(m: &MachineRuntime) -> MachineView {
         (Power::Missing, _) => (Missing, "Deleted on Agent37".to_owned()),
         (_, _) if m.last_error().is_some() => (Error, m.last_error().unwrap_or_default()),
         (Power::Running, Some(w)) if w.agents_unknown => (Working, "T3 not answering · stays up 30m max".to_owned()),
-        (Power::Running, Some(w)) if w.cpu_busy => (Working, "Working · busy CPU".to_owned()),
-        (Power::Running, Some(w)) if w.busy => (Working, working_line(w.working_threads, w.working_subagents)),
+        (Power::Running, Some(w)) if w.cpu_busy => (Working, busy_cpu_line(w)),
+        (Power::Running, Some(w)) if w.busy => (Working, working_line(w)),
         (Power::Running, Some(w)) if w.phase == WatchdogPhase::Active && w.keep_awake_forever => {
             (Idle, "Awake until you stop it".to_owned())
         }
@@ -1034,7 +1048,14 @@ fn view(m: &MachineRuntime) -> MachineView {
         keep_awake_forever: running_watchdog.is_some_and(|w| w.keep_awake_forever),
         github_code: m.github_code(),
         signing_in: m.signing_in(),
+        activity,
     }
+}
+
+/// What the machine is doing, from its watchdog's last report: live while it runs.
+fn activity_view(m: &MachineRuntime) -> Option<ActivityView> {
+    let (activity, at) = m.activity()?;
+    Some(activity.view(at, m.power() == Power::Running, &m.projects(), &m.issue_models()))
 }
 
 /// The UI's rule: `^[a-z0-9][a-z0-9-]{0,31}$`.
@@ -1044,17 +1065,36 @@ fn valid_name(name: &str) -> bool {
 }
 
 /// "Working · 2 threads · 3 subagents".
-fn working_line(threads: u32, subagents: u32) -> String {
+/// A thread waiting for the user says so: "Needs you · Fix login: needs your approval". One
+/// thread at work is named: "Working · Fix login · 2 subagents".
+fn working_line(w: &WatchdogStatus) -> String {
+    let live = w.activity.as_ref().map(|a| a.working.as_slice()).unwrap_or_default();
+    if let Some(t) = live.iter().find(|t| needs_you(&t.state)) {
+        let title = if t.title.is_empty() { "a thread" } else { &t.title };
+        return format!("Needs you · {title}: {}", t.state);
+    }
     let count = |n: u32, one: &str| match n {
         0 => None,
         1 => Some(format!("1 {one}")),
         n => Some(format!("{n} {one}s")),
     };
+    let threads = match live {
+        [t] if w.working_threads == 1 && !t.title.is_empty() => Some(t.title.clone()),
+        _ => count(w.working_threads, "thread"),
+    };
     std::iter::once("Working".to_owned())
-        .chain(count(threads, "thread"))
-        .chain(count(subagents, "subagent"))
+        .chain(threads)
+        .chain(count(w.working_subagents, "subagent"))
         .collect::<Vec<_>>()
         .join(" · ")
+}
+
+/// "Working · busy CPU · next build": what's using it, when the watchdog says.
+fn busy_cpu_line(w: &WatchdogStatus) -> String {
+    match w.activity.as_ref().and_then(|a| a.top.first()) {
+        Some(p) => format!("Working · busy CPU · {}", p.name),
+        None => "Working · busy CPU".to_owned(),
+    }
 }
 
 /// "42s", "4m", "1h 5m"; minutes round up. The UI's `timeLeft` matches it.
@@ -1171,7 +1211,7 @@ mod tests {
     fn project_costs() {
         use crate::machine::projects::MachineProject;
         use crate::store::ProjectUsage;
-        let project = |id: &str, title: &str| MachineProject { id: id.into(), title: title.into(), repo_key: None, status: None, issues: None };
+        let project = |id: &str, title: &str| MachineProject { id: id.into(), title: title.into(), repo_key: None, root: None, status: None, issues: None };
         let projects = [project("a", "Alpha"), project("b", "Beta")];
         let usage = ProjectUsage {
             day: "2026-11-22".into(),

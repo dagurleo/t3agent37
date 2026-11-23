@@ -7,7 +7,7 @@ use gpui_kit::*;
 use t3agent37_lib::app::Setup;
 use t3agent37_lib::mcp::Client;
 
-use t3agent37_lib::store::{AWAKE_ALERTS, Settings, WALLET_ALERTS};
+use t3agent37_lib::store::{AWAKE_ALERTS, PanelSize, Settings, WALLET_ALERTS};
 
 use super::details::{segment, sub_header};
 use super::kit::{self, Btn, Icon, Size};
@@ -213,6 +213,43 @@ impl Panel {
             .child(wallet)
             .child(awake)
             .child(finished);
+        // The panel's size takes effect at once, so it isn't one of the plain `choices`.
+        let current = settings.panel_size;
+        let mut sizes = div().flex().flex_none().w(px(196.)).border_1().border_color(tk.frame);
+        for (i, size) in PanelSize::ALL.iter().copied().enumerate() {
+            sizes = sizes.child(
+                segment(("panel-size-choice", i), i == 0, size == current, &tk)
+                    .h(px(26.))
+                    .child(size.label())
+                    .when(size != current, |s| s.on_click(cx.listener(move |this, _, window, cx| this.set_panel_size(size, window, cx)))),
+            );
+        }
+        let look = div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .py(px(11.))
+            .border_t_1()
+            .border_color(tk.line)
+            .child(kit::caption(&tk).child("look"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.))
+                    .child(div().flex().flex_col().gap(px(2.)).min_w_0().child("Panel size").child(kit::hint("⌘+ and ⌘− while it's open", &tk)))
+                    .child(sizes),
+            )
+            .child(toggle(
+                "animated-rooftop",
+                "Animated rooftop",
+                "The pixel-art city with an agent walking for each machine, instead of the still skyline",
+                settings.animated_rooftop,
+                &tk,
+                cx,
+                |s, on| s.animated_rooftop = on,
+            ));
         let projects = div().flex().flex_col().gap(px(8.)).py(px(11.)).border_t_1().border_color(tk.line).child(kit::caption(&tk).child("projects")).child(toggle(
             "set-up-projects",
             "Set up projects after adding them",
@@ -236,7 +273,7 @@ impl Panel {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .child(sub_header("Settings", &tk, cx))
+            .when(self.state.settings.animated_rooftop, |d| d.child(sub_header("Settings", &tk, cx)))
             .child(
                 div()
                     .flex()
@@ -249,6 +286,7 @@ impl Panel {
                     .child(kit::hint("Machines sleep 5 minutes after their agents finish and wake by themselves when you use them in T3 Code.", &tk).pb(px(7.)))
                     .child(login)
                     .child(mcp)
+                    .child(look)
                     .child(alerts)
                     .child(projects)
                     .child(version)
@@ -273,7 +311,7 @@ impl Panel {
     }
 
     /// Saves one change to the settings.
-    fn change_settings(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
+    pub(super) fn change_settings(&mut self, change: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
         let mut settings = self.state.settings.clone();
         change(&mut settings);
         // shown at once; the backend's next state agrees

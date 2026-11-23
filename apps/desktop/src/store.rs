@@ -221,6 +221,11 @@ pub struct Settings {
     pub notify_finished: bool,
     /// A project added to a machine gets its setup scripts run, or its dependencies installed.
     pub set_up_projects: bool,
+    /// The panel's top: the pixel-art rooftop with its walking agents, instead of the still
+    /// skyline.
+    pub animated_rooftop: bool,
+    /// How big the panel opens.
+    pub panel_size: PanelSize,
 }
 
 impl Default for Settings {
@@ -231,7 +236,48 @@ impl Default for Settings {
             awake_alert_hours: Some(3),
             notify_finished: true,
             set_up_projects: true,
+            animated_rooftop: false,
+            panel_size: PanelSize::Standard,
         }
+    }
+}
+
+/// The panel's sizes. It grows down and to both sides of the menu-bar item, and never past the
+/// screen.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PanelSize {
+    #[default]
+    Standard,
+    Large,
+    Huge,
+}
+
+impl PanelSize {
+    pub const ALL: [PanelSize; 3] = [PanelSize::Standard, PanelSize::Large, PanelSize::Huge];
+
+    /// Width and height in points.
+    pub fn dims(self) -> (f32, f32) {
+        match self {
+            PanelSize::Standard => (380., 560.),
+            PanelSize::Large => (460., 760.),
+            PanelSize::Huge => (580., 940.),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PanelSize::Standard => "Standard",
+            PanelSize::Large => "Large",
+            PanelSize::Huge => "Huge",
+        }
+    }
+
+    /// The next size up or down, staying at the ends.
+    pub fn step(self, up: bool) -> PanelSize {
+        let i = PanelSize::ALL.iter().position(|s| *s == self).unwrap_or(0);
+        let j = if up { (i + 1).min(PanelSize::ALL.len() - 1) } else { i.saturating_sub(1) };
+        PanelSize::ALL[j]
     }
 }
 

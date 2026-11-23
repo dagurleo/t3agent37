@@ -373,7 +373,7 @@ impl Session {
         let m = self.m.clone();
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let _ = tx.send(Internal::Woke(m.ensure_awake().await));
+            let _ = tx.send(Internal::Woke(m.wake_for("T3 Code").await));
         });
     }
 

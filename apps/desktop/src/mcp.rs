@@ -406,8 +406,12 @@ fn tool_list() -> Value {
              tasks a webhook triggers, as last read), each with a wakingUrl: send the task's \
              deliveries there instead of T3's own URL, and a delivery wakes the machine instead of \
              waiting for it to be up (T3 checks the token, signature and filters as usual), and \
-             its start URL while it's on (start: url and defaultModel; see start_url). Never \
-             wakes it.",
+             its start URL while it's on (start: url and defaultModel; see start_url), and what \
+             it's doing (activity: the threads its agents work on, each with its project, model, \
+             state such as \"working\" or \"needs your approval\", start time, subagents and \
+             background commands; the threads finished in the last day; what woke it and when; \
+             its CPU, memory and disk; its busiest processes. live: false means as it was before \
+             it went to sleep). Never wakes it.",
             json!({ "machine": machine }),
             &["machine"],
         ),
@@ -511,7 +515,7 @@ async fn run(app: &Arc<App>, call: Call) -> Result<String> {
         }
         Call::WakeMachine { machine } => {
             let m = app.machine(&machine)?;
-            m.ensure_awake().await?;
+            m.wake_for("an agent on your computer").await?;
             format!("{} is awake.", m.record().name)
         }
         Call::SleepMachine { machine } => {

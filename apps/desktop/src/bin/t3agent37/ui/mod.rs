@@ -5,8 +5,10 @@
 
 mod details;
 mod forms;
+mod header;
 mod kit;
 mod list;
+mod now;
 mod rooftop;
 mod settings;
 
@@ -27,8 +29,6 @@ use crate::pixel::{Px, Theme};
 use crate::theme::{self, BODY, MONO};
 use kit::Icon;
 
-pub const WIDTH: f32 = 380.;
-pub const HEIGHT: f32 = 560.;
 const FPS: u64 = 12;
 /// The strip's slide between full and compact, as `--strip-ease`.
 const STRIP_EASE: Duration = Duration::from_millis(220);
@@ -132,6 +132,9 @@ pub struct Panel {
     shown: Vec<Arc<RenderImage>>,
     /// Strip height animation: from, to, since.
     strip: (f32, f32, Instant),
+    /// The look the strip was last drawn in (the animated rooftop or not), so a change in
+    /// Settings takes effect at once.
+    rooftop_on: Option<bool>,
     roof_scroll: ScrollHandle,
     details_scroll: ScrollHandle,
     /// The agent the wide roof last scrolled to.
@@ -227,6 +230,7 @@ impl Panel {
             started: Instant::now(),
             shown: Vec::new(),
             strip: (rooftop::FULL, rooftop::FULL, Instant::now()),
+            rooftop_on: None,
             roof_scroll: ScrollHandle::new(),
             details_scroll: ScrollHandle::new(),
             roof_followed: None,
@@ -334,7 +338,7 @@ impl Panel {
         let compact = |v: &View| *v != View::List;
         if compact(&view) != compact(&self.view) {
             let now = self.strip_height();
-            self.strip = (now, if compact(&view) { rooftop::COMPACT } else { rooftop::FULL }, Instant::now());
+            self.strip = (now, self.strip_target(&view), Instant::now());
         }
         self.menu = None;
         self.menu_confirm = false;
@@ -702,8 +706,19 @@ impl Render for Panel {
             .track_focus(&self.focus)
             .key_context("Panel")
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" {
+                let k = &event.keystroke;
+                if k.key == "escape" {
                     this.escape(window, cx);
+                }
+                // ⌘+ and ⌘− resize the panel, ⌘0 puts it back.
+                if k.modifiers.platform && this.state.setup == Setup::Ready {
+                    let size = this.state.settings.panel_size;
+                    match k.key.as_str() {
+                        "=" | "+" => this.set_panel_size(size.step(true), window, cx),
+                        "-" => this.set_panel_size(size.step(false), window, cx),
+                        "0" => this.set_panel_size(t3agent37_lib::store::PanelSize::Standard, window, cx),
+                        _ => {}
+                    }
                 }
             }))
             // Esc in a text field: the field has its own binding, so it's caught on the way in.

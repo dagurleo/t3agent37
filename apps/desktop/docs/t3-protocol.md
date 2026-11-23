@@ -84,7 +84,7 @@ All endpoints are in `C:environmentHttp.ts:584-627`; the client calls are in `CR
      ```
    - The client checks the expected id, the known-address rule and protocol compatibility (`CR:connection/compatibility.ts`).
 2. **`POST /oauth/token`**
-   - Body is `application/x-www-form-urlencoded` (`C:auth.ts:220-229`); built by `bootstrapRemoteBearerSession` (`remote.ts:145-170`). No `dpop` header for direct pairing.
+   - Body is `application/x-www-form-urlencoded` (`C:auth.ts:220-229`); built by `bootstrapRemoteBearerSession` (`remote.ts:145-170`). No `dpop` header for direct pairing before the 0.1.12 nightlies (see DPoP below).
      ```
      grant_type=urn:ietf:params:oauth:grant-type:token-exchange
      &subject_token=<pairing token>
@@ -100,6 +100,8 @@ All endpoints are in `C:environmentHttp.ts:584-627`; the client calls are in `CR
      Newer servers add `permissions` (`docs/internals/environment-auth.md:93-99`).
    - A bearer token lasts 30 days: `DEFAULT_SESSION_TTL` (`S:auth/SessionStore.ts:448`). There is no refresh token. The client keeps only `access_token` (`onboarding.ts:149-151`).
 3. The client then connects (§3).
+
+**DPoP, since the 0.1.12 nightlies** (seen in 0.1.12-nightly.20261122.5071's client, November 2026): direct pairing goes through `clientRuntime.connection.remote.authorizeDirectDpop` instead. The token request carries a `dpop` proof header; real T3 answers `"token_type":"DPoP"` for a session bound to the proof's key (`token_type: session.proofKeyThumbprint ? "DPoP" : "Bearer"`). The desktop stores a `DpopConnectionCredential`, and every request after sends `Authorization: DPoP <access_token>` with a fresh `dpop` proof, the websocket ticket included (`issueRemoteDpopWebSocketTicket`). To renew, it trades the access token itself: `subject_token=<access_token>&subject_token_type=urn:ietf:params:oauth:token-type:access_token`, with a proof. Environments paired before keep their `BearerConnectionCredential` and still send `Bearer`. The proxy takes both schemes, doesn't check the proof, answers `DPoP` when a proof came, and answers a renewal of one of its tokens with the same token (they last ten years). Before it did, a machine paired with this T3 Code got 401 on every websocket ticket and showed "Reconnecting…".
 
 ### 1.4 What the desktop stores, and where
 

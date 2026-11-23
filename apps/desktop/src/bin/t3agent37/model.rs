@@ -347,6 +347,29 @@ pub fn money(n: f64) -> String {
     format!("${n:.2}")
 }
 
+/// "just now", "12m ago", "3h ago", "2d ago": how long ago `ms` (unix ms) was.
+pub fn ago_ms(ms: u64, now: u64) -> String {
+    let secs = now.saturating_sub(ms) / 1000;
+    if secs < 60 { "just now".to_owned() } else { format!("{} ago", ago(secs)) }
+}
+
+/// "10:02" today, "Sun 10:02" before: the local time of `ms` (unix ms).
+pub fn clock(ms: u64) -> String {
+    use chrono::TimeZone;
+    let Some(t) = chrono::Local.timestamp_millis_opt(ms as i64).single() else { return String::new() };
+    if t.date_naive() == chrono::Local::now().date_naive() { t.format("%H:%M").to_string() } else { t.format("%a %H:%M").to_string() }
+}
+
+/// "640 MB", "1.2 GB".
+pub fn megabytes(mb: u64) -> String {
+    if mb < 1000 { format!("{mb} MB") } else { gigabytes(mb as f64 / 1024.) }
+}
+
+/// "6.1 GB", "20 GB".
+pub fn gigabytes(gb: f64) -> String {
+    if gb >= 10. { format!("{gb:.0} GB") } else { format!("{gb:.1} GB") }
+}
+
 /// Money that may be under a cent: "<$0.01" rather than "$0.00".
 pub fn cents(n: f64) -> String {
     if n > 0.0 && n < 0.005 { "<$0.01".to_owned() } else { money(n) }
@@ -434,6 +457,16 @@ pub fn joiners(n: usize) -> impl Iterator<Item = &'static str> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn sizes_and_times_for_the_activity() {
+        use super::{ago_ms, gigabytes, megabytes};
+        assert_eq!((megabytes(640), megabytes(1260), megabytes(7936)), ("640 MB".into(), "1.2 GB".into(), "7.8 GB".into()));
+        assert_eq!((gigabytes(6.1), gigabytes(19.6)), ("6.1 GB".into(), "20 GB".into()));
+        assert_eq!(ago_ms(1_000, 30_000), "just now");
+        assert_eq!(ago_ms(0, 12 * 60_000), "12m ago");
+        assert_eq!(ago_ms(0, 3 * 3_600_000), "3h ago");
+    }
 
     #[test]
     fn limited_github_lines() {

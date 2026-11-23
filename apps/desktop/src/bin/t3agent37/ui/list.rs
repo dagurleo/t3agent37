@@ -11,6 +11,7 @@ use t3agent37_lib::app::{ElsewhereMachine, MachineState as State, MachineView};
 use super::kit::{self, Btn, Icon, Size};
 use super::{Panel, View};
 use crate::model::{self, MenuItem, machine_key, pixel_state};
+use crate::pixel::flat::{SPY_H, SPY_W, paint_flat_spy};
 use crate::pixel::paint::{ICON_H, ICON_W, paint_spy_icon};
 use crate::pixel::{Px, seed_of};
 use crate::theme::{DISPLAY, MONO, Tokens};
@@ -165,9 +166,17 @@ impl Panel {
         let detail = model::detail(m);
         let t = self.t();
 
-        let mut icon = Px::new(ICON_W, ICON_H);
-        paint_spy_icon(&mut icon, crate::theme::theme_of(window), pixel_state(m.state), seed_of(&key), self.clock());
-        let icon = self.image(&icon, (2. * window.scale_factor()).round() as usize);
+        // A walking agent on its patch of roof with the animated rooftop; else a still spy.
+        let icon = if self.state.settings.animated_rooftop {
+            let mut buf = Px::new(ICON_W, ICON_H);
+            paint_spy_icon(&mut buf, crate::theme::theme_of(window), pixel_state(m.state), seed_of(&key), self.clock());
+            kit::pixels(self.image(&buf, (2. * window.scale_factor()).round() as usize), 48., 42.).into_any_element()
+        } else {
+            let mut buf = Px::new(SPY_W, SPY_H);
+            paint_flat_spy(&mut buf, pixel_state(m.state), &super::header::flat(&tk));
+            let image = self.image(&buf, (3. * window.scale_factor()).round() as usize);
+            div().flex_none().w(px(48.)).h(px(42.)).flex().items_center().justify_center().child(kit::pixels(image, 33., 39.)).into_any_element()
+        };
 
         let name_color = if matches!(m.state, State::Asleep | State::Missing) { tk.muted } else { tk.fg };
         let detail_color = match m.state {
@@ -189,7 +198,7 @@ impl Panel {
                     // who's signed in: one logo per coding agent
                     .children(m.signed_in.iter().filter_map(|a| kit::agent_logo(a, 12., tk.muted))),
             )
-            .child(div().mt(px(3.)).font_family(MONO).text_size(px(11.)).line_height(relative(1.3)).text_color(detail_color).truncate().child(detail));
+            .child(div().mt(px(2.)).text_size(px(12.5)).line_height(relative(1.3)).text_color(detail_color).truncate().child(detail));
 
         let armed_key = format!("primary:{key}");
         let armed = self.is_armed(&armed_key);
@@ -238,7 +247,7 @@ impl Panel {
             })
             .when(!m.id.is_empty() && pending.is_none(), |d| d.child(self.render_row_menu(m, &tk, cx)));
 
-        let top = div().flex().items_center().gap(px(12.)).child(kit::pixels(icon, 48., 42.)).child(text).child(actions);
+        let top = div().flex().items_center().gap(px(12.)).child(icon).child(text).child(actions);
 
         // notes under the name: a refused delete, sign-ins, setting it up, projects arriving
         let mut notes: Vec<AnyElement> = Vec::new();
