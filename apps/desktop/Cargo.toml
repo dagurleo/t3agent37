@@ -7,10 +7,18 @@ edition = "2024"
 publish = false
 default-run = "t3agent37"
 
-# The backend: Agent37, the machines, the T3 proxy, MCP. UI-agnostic; the menu-bar app
-# (src/bin/t3agent37) and the headless dev driver (src/bin/t3agent37-dev.rs) both run it.
+# The backend: Agent37, the machines, the T3 proxy, MCP. UI-agnostic; the menu-bar app and the
+# `t3agent37` command (src/bin/t3agent37) and the headless dev driver (src/bin/t3agent37-dev.rs)
+# all run it.
 [lib]
 name = "t3agent37_lib"
+
+[features]
+default = ["panel"]
+# The menu-bar app's panel (GPUI, and the AppKit side in macos/shell.m). Without it the binary is
+# the `t3agent37` command alone: `cargo build --release --no-default-features`, for Linux, or a
+# Mac without the app.
+panel = ["dep:gpui-kit", "dep:raw-window-handle", "dep:futures", "dep:image"]
 
 [dependencies]
 # backend
@@ -33,11 +41,11 @@ url = "2"
 urlencoding = "2"
 bytes = "1"
 sha2 = "0.10"
-# the menu-bar app
-gpui-kit = "0.10.0"
-raw-window-handle = "0.6"
-futures = "0.3"
-image = { version = "0.25", default-features = false }
+# the menu-bar app (the `panel` feature)
+gpui-kit = { version = "0.10.0", optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+futures = { version = "0.3", optional = true }
+image = { version = "0.25", default-features = false, optional = true }
 
 [build-dependencies]
 cc = "1"

@@ -1,6 +1,7 @@
 //! MCP server so coding agents on this computer (Claude Code, Codex) can drive t3agent37:
 //! streamable HTTP on loopback, one JSON response per request. Local processes are trusted
 //! (they could call the Agent37 API with its key anyway); Host and Origin checks keep web pages out.
+//! The `t3agent37` command calls the same tools at `/cli`, which answers once a call is done.
 
 use crate::app::App;
 use crate::machine::signin::Agent;
@@ -37,14 +38,21 @@ add_project puts one of the user's projects on a machine, as T3 Code's own \"Add
 does. Each machine is also a linked environment of the user's T3 Code (t3_environment_links lists it): \
 work there with T3's own tools and that environmentId, e.g. delegate_task or t3_thread_launch.";
 
+/// Where it listens: `MCP_PORT`, or `T3AGENT37_MCP_PORT` for a second copy in development (with
+/// a data folder of its own, `T3AGENT37_DATA_DIR`). The `t3agent37` command looks there too.
+pub fn port() -> u16 {
+    std::env::var("T3AGENT37_MCP_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(MCP_PORT)
+}
+
 pub fn url() -> String {
-    format!("http://127.0.0.1:{MCP_PORT}/mcp")
+    format!("http://127.0.0.1:{}/mcp", port())
 }
 
 pub async fn serve(app: Arc<App>) -> Result<()> {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", MCP_PORT))
+    let port = port();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
-        .with_context(|| format!("listening on port {MCP_PORT}"))?;
+        .with_context(|| format!("listening on port {port}"))?;
     axum::serve(listener, router(app)).await?;
     Ok(())
 }
@@ -52,6 +60,12 @@ pub async fn serve(app: Arc<App>) -> Result<()> {
 /// What `tools/call` runs; a trait so the protocol is testable without a real app.
 trait Tools: Send + Sync + 'static {
     fn call(self: Arc<Self>, call: Call) -> impl Future<Output = Result<String>> + Send;
+
+    /// The same, answered only once it's done (`/cli`): the command shows its own progress and
+    /// has no client timeout to stay under.
+    fn call_to_end(self: Arc<Self>, call: Call) -> impl Future<Output = Result<String>> + Send {
+        self.call(call)
+    }
 }
 
 /// `tools/call` params: the tool's name and its arguments.
@@ -119,7 +133,24 @@ enum Call {
 
 fn router<T: Tools>(tools: Arc<T>) -> Router {
     // Only POST is routed, so GET gets 405.
-    Router::new().route("/mcp", post(handle::<T>)).with_state(tools)
+    Router::new().route("/mcp", post(handle::<T>)).route("/cli", post(handle_cli::<T>)).with_state(tools)
+}
+
+/// The `t3agent37` command's calls: `{name, arguments}` as in `tools/call`, answered
+/// `{ok: true, text}` or `{ok: false, error}` once the call is done.
+async fn handle_cli<T: Tools>(State(tools): State<Arc<T>>, headers: HeaderMap, body: String) -> Response {
+    if !from_local_process(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let call = serde_json::from_str::<Value>(&body).and_then(parse_call);
+    match call {
+        Ok(call) => Json(match tools.call_to_end(call).await {
+            Ok(text) => json!({ "ok": true, "text": text }),
+            Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
+        })
+        .into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "ok": false, "error": format!("invalid call: {e}") }))).into_response(),
+    }
 }
 
 async fn handle<T: Tools>(State(tools): State<Arc<T>>, headers: HeaderMap, body: String) -> Response {
@@ -487,6 +518,11 @@ impl Tools for App {
             Err(_) => Ok(pending),
         }
     }
+
+    async fn call_to_end(self: Arc<Self>, call: Call) -> Result<String> {
+        // Detached too: a command stopped with ^C doesn't stop the work halfway.
+        tokio::spawn(async move { run(&self, call).await }).await?
+    }
 }
 
 async fn run(app: &Arc<App>, call: Call) -> Result<String> {
@@ -835,5 +871,31 @@ mod tests {
         }
         let res = reqwest::get(serve_echo().await).await.unwrap();
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn cli_calls_answer_once_done() {
+        let url = serve_echo().await.replace("/mcp", "/cli");
+        let call = |headers: &'static [(&'static str, &'static str)], body: Value| {
+            let url = url.clone();
+            async move {
+                let mut req = reqwest::Client::new().post(url).json(&body);
+                for (k, v) in headers {
+                    req = req.header(*k, *v);
+                }
+                let res = req.send().await.unwrap();
+                (res.status(), res.json::<Value>().await.unwrap_or(Value::Null))
+            }
+        };
+        let (status, r) = call(&[], json!({ "name": "wake_machine", "arguments": { "machine": "dev" } })).await;
+        assert_eq!((status, r), (StatusCode::OK, json!({ "ok": true, "text": r#"WakeMachine { machine: "dev" }"# })));
+        let (_, r) = call(&[], json!({ "name": "list_machines" })).await;
+        assert_eq!(r["text"], "ListMachines");
+        let (_, r) = call(&[], json!({ "name": "sleep_machine", "arguments": { "machine": "dev" } })).await;
+        assert_eq!(r, json!({ "ok": false, "error": "an agent is working" }));
+        let (status, r) = call(&[], json!({ "name": "format_disk" })).await;
+        assert_eq!((status, r["ok"].clone()), (StatusCode::BAD_REQUEST, json!(false)));
+        let (status, _) = call(&[("origin", "https://evil.example")], json!({ "name": "list_machines" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
     }
 }

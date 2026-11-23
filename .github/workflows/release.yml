@@ -1,11 +1,13 @@
 # A release: pushing a tag v<version> (the version in apps/desktop/Cargo.toml) builds t3agent37
 # for Apple silicon and Intel, signs it with the Developer ID, has Apple notarize it, and
 # publishes the DMG and Sparkle's appcast.xml as that tag's GitHub release
-# (apps/desktop/scripts/release-macos.sh --publish).
+# (apps/desktop/scripts/release-macos.sh --publish), with the `t3agent37` command alone for macOS
+# and, built on Linux runners first, for Linux (x86_64 and arm64), each with its .sha256.
 #
 # The keys are the `release` environment's secrets, given only to runs for v* tags, and only once
-# the maintainer approves the run (Settings > Environments > release). Nothing from other runs
-# comes in: no build cache, and no actions but GitHub's own checkout, pinned to its commit.
+# the maintainer approves the run (Settings > Environments > release). The Linux builds need no
+# keys and run before that. Nothing from other runs comes in: no build cache, and no actions but
+# GitHub's own (checkout, upload-artifact, download-artifact), pinned to their commits.
 name: Release
 
 on:
@@ -20,8 +22,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  linux:
+    name: Command for Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The tag is Cargo.toml's version
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [ "$GITHUB_REF_NAME" = "v$VERSION" ] || { echo "the tag is $GITHUB_REF_NAME, but Cargo.toml says $VERSION"; exit 1; }
+
+      - name: Build
+        run: |
+          rustup toolchain install
+          cargo build --release --locked --no-default-features --bin t3agent37
+          ASSET=t3agent37-linux-${{ matrix.arch }}.tar.gz
+          mkdir -p dist
+          tar -czf "dist/$ASSET" -C target/release t3agent37
+          (cd dist && sha256sum "$ASSET" > "$ASSET.sha256")
+          target/release/t3agent37 --version
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-${{ matrix.arch }}
+          path: apps/desktop/dist/*
+          if-no-files-found: error
+
   release:
     name: Release
+    needs: linux
     runs-on: macos-latest
     environment: release
     permissions:
@@ -73,11 +114,19 @@ jobs:
           echo "KEYS=$KEYS" >> "$GITHUB_ENV"
           echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
 
+      - name: The command for Linux, from the jobs above
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: linux-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/linux
+
       - name: Build, notarize and publish
         env:
           GH_TOKEN: ${{ github.token }}
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER_ID }}
+          EXTRA_ASSETS_DIR: ${{ runner.temp }}/linux
         run: NOTARY_KEY="$KEYS/notary.p8" SPARKLE_KEY_FILE="$KEYS/update-key" scripts/release-macos.sh --publish
 
       - name: Clean up the keys

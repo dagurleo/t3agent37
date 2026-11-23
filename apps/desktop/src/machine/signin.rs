@@ -571,16 +571,33 @@ fn device_code(log: &str) -> Option<String> {
     }).map(str::to_owned)
 }
 
+/// On the clipboard, where there's a way: `pbcopy` on macOS; on Linux Wayland's `wl-copy`, else
+/// `xclip` or `xsel`, whichever is installed. Best effort.
 pub(crate) fn copy_to_clipboard(text: &str) {
-    if !cfg!(target_os = "macos") {
-        return;
-    }
     use std::io::Write;
-    if let Ok(mut child) = std::process::Command::new("pbcopy").stdin(std::process::Stdio::piped()).spawn() {
-        if let Some(stdin) = child.stdin.as_mut() {
+    let tools: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
+        &[("pbcopy", &[])]
+    } else if cfg!(target_os = "linux") {
+        &[("wl-copy", &[]), ("xclip", &["-selection", "clipboard"]), ("xsel", &["--clipboard", "--input"])]
+    } else {
+        &[]
+    };
+    for (program, args) in tools {
+        let Ok(mut child) = std::process::Command::new(program)
+            .args(*args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(text.as_bytes());
         }
-        let _ = child.wait();
+        if child.wait().is_ok_and(|s| s.success()) {
+            return;
+        }
     }
 }
 

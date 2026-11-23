@@ -1,5 +1,5 @@
-# Each pull request (and main) checked: the app built and its tests run on a Mac, and the site
-# type-checked and built.
+# Each pull request (and main) checked: the app built and its tests run on a Mac, the command
+# alone (no panel) built and tested on Linux, and the site type-checked and built.
 name: CI
 
 on:
@@ -31,6 +31,21 @@ jobs:
           workspaces: apps/desktop
       - name: Test
         run: cargo test --locked
+
+  command:
+    name: Command on Linux
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop
+      - name: Test
+        run: cargo test --locked --no-default-features
 
   site:
     name: Site

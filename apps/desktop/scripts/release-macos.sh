@@ -1,9 +1,12 @@
 #!/bin/sh
 # t3agent37 for other Macs: built for Apple silicon and Intel, signed with a Developer ID,
 # notarized by Apple and stapled, in a DMG; with Sparkle's appcast.xml for updates. Into
-# target/release/dist. With --publish, tagged v<version> and released on GitHub with both files:
-# the app checks the latest release's appcast.xml for updates, and the site's download button
-# links to the latest release's t3agent37.dmg.
+# target/release/dist. And the `t3agent37` command alone (no app), signed and notarized too, as
+# t3agent37-macos.tar.gz with its .sha256, into target/release/dist-cli. With --publish, tagged
+# v<version> and released on GitHub with those files, and with the Linux builds of the command
+# in $EXTRA_ASSETS_DIR if set (the workflow builds them): the app checks the latest release's
+# appcast.xml for updates, the site's download button links to the latest release's
+# t3agent37.dmg, and install.sh downloads the command from the latest release.
 #
 # Releases are made on GitHub's runners (.github/workflows/release.yml): push a tag v<version>
 # and approve the run. That workflow runs this script with the keys from its secrets:
@@ -136,13 +139,44 @@ spctl --assess --type execute --verbose "$APP"
 grep -q "sparkle:edSignature" "$DIST/appcast.xml" || { echo "the appcast isn't signed: see step 2 above"; exit 1; }
 echo "built $DMG and $DIST/appcast.xml: t3agent37 $VERSION ($BUILD)"
 
+# The command alone (no panel, `--no-default-features`), for Apple silicon and Intel in one
+# file, signed and notarized. A bare program can't be stapled: Gatekeeper asks Apple the first
+# time it runs one that was downloaded with a quarantine (curl's aren't). In a folder of its own
+# and after the appcast, so Sparkle never takes it for an update.
+echo "building the command…"
+CLI_TARGET=target/cli
+CLI_DIST=target/release/dist-cli
+case "$(uname -m)" in
+    arm64) OTHER=x86_64-apple-darwin ;;
+    *) OTHER=aarch64-apple-darwin ;;
+esac
+CARGO_TARGET_DIR=$CLI_TARGET cargo build --release --locked --no-default-features --bin t3agent37
+CARGO_TARGET_DIR=$CLI_TARGET cargo build --release --locked --no-default-features --bin t3agent37 --target "$OTHER"
+rm -rf "$CLI_DIST"
+mkdir -p "$CLI_DIST" "$CLI_TARGET/universal"
+lipo -create "$CLI_TARGET/release/t3agent37" "$CLI_TARGET/$OTHER/release/t3agent37" -output "$CLI_TARGET/universal/t3agent37"
+codesign --force --timestamp --options runtime --sign "$IDENTITY" "$CLI_TARGET/universal/t3agent37"
+ditto -c -k "$CLI_TARGET/universal/t3agent37" "$CLI_TARGET/t3agent37.zip"
+echo "notarizing the command…"
+# shellcheck disable=SC2086
+xcrun notarytool submit "$CLI_TARGET/t3agent37.zip" $NOTARY --wait
+rm "$CLI_TARGET/t3agent37.zip"
+[ "$("$CLI_TARGET/universal/t3agent37" --version)" = "t3agent37 $VERSION" ] || { echo "the command doesn't say it's $VERSION"; exit 1; }
+tar -czf "$CLI_DIST/t3agent37-macos.tar.gz" -C "$CLI_TARGET/universal" t3agent37
+(cd "$CLI_DIST" && shasum -a 256 t3agent37-macos.tar.gz > t3agent37-macos.tar.gz.sha256)
+echo "built $CLI_DIST/t3agent37-macos.tar.gz"
+
 if [ -n "$PUBLISH" ]; then
     # (Pushed by hand to start the release on GitHub, or tagged here.)
     if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
         git tag "$TAG"
         git push -q origin "$TAG"
     fi
-    gh release create "$TAG" "$DMG" "$DIST/appcast.xml" --repo "$REPO" --verify-tag \
+    set -- "$DMG" "$DIST/appcast.xml" "$CLI_DIST"/*
+    if [ -n "${EXTRA_ASSETS_DIR:-}" ]; then
+        set -- "$@" "$EXTRA_ASSETS_DIR"/*
+    fi
+    gh release create "$TAG" "$@" --repo "$REPO" --verify-tag \
         --title "t3agent37 $VERSION" --generate-notes
     echo "released t3agent37 $VERSION: https://github.com/$REPO/releases/tag/$TAG (updates from $FEED_URL)"
 fi

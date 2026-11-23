@@ -11,8 +11,9 @@ Bug reports and pull requests are welcome. For a security problem, see [SECURITY
 - **Only touch machines t3agent37 created.** The Agent37 workspace can hold other VMs that aren't this app's.
 - **Coding agents: don't commit or push unless asked.**
 - **Remember that any request to a sleeping VM's public URL wakes it** (and bills it). Nothing in the app should talk to a sleeping machine unless it means to wake it.
-- **Run one t3agent37 at a time.** A second copy would share the data folder, ports and machines, so it refuses to start while port 47370 is taken.
+- **Run one t3agent37 at a time**, the app or `t3agent37 serve`. A second copy would share the data folder, ports and machines, so it refuses to start while port 47370 is taken.
 - **Don't rebuild the binary a running copy runs from.** macOS kills a process whose signed binary changes underneath it (no crash report). Run the bundle, or a copy of `target/debug/t3agent37`.
+- **Nothing the panel does on each refresh may reach a machine.** The panel refreshes on every change, every few seconds while a machine is up, and a hidden panel too. The details used to look again at the machine's settings on each (a command over Agent37's exec): with skiff's details left open, those piled up to 20 node processes at once (load 27), which kept it busy and awake. They look again when the view opens, then once a minute (`DETAILS_REFRESH_EVERY` in `backend.rs`).
 - **Take a value out of a `Mutex` in a `let` before a struct literal that locks it again.** A guard made in one field (`m.cache.lock().unwrap().signed_in_providers()`) lives until the whole literal is built, so a later field that takes the same lock deadlocks. That froze the whole app once, in `app::view`.
 
 ## Build, install, test (macOS)
@@ -24,7 +25,9 @@ cd apps/desktop
 scripts/bundle-macos.sh --install   # release build → target/release/bundle, copied to /Applications and opened (quits a running copy)
 scripts/bundle-macos.sh --open      # the same, opened from target/release/bundle instead
 cargo run -- --open                 # a debug build, panel open at launch (quit the bundled one first)
-cargo test                          # backend and panel tests
+cargo test                          # backend, panel and command tests
+cargo test --no-default-features    # the same without the panel, as CI runs it on Linux
+cargo build --release --no-default-features   # the `t3agent37` command alone: no GPUI, no AppKit
 (cd src/machine && node --test *.test.mjs)   # the machine's scripts (issues, start URL, activity)
 cargo run --bin t3agent37-dev       # the backend alone, driven from stdin (see the file's header)
 ```
@@ -32,12 +35,13 @@ cargo run --bin t3agent37-dev       # the backend alone, driven from stdin (see 
 - **Signing:** `bundle-macos.sh` signs with your Developer ID if the keychain has one, else your Apple Development certificate, else ad hoc (fine for your own Mac). `SIGN_IDENTITY` picks one.
 - **Updates in your own builds:** on only when Sparkle's key for t3agent37 is in your keychain (the maintainer's builds). Otherwise Settings says "This build doesn't update itself".
 - **Toolchain:** Rust 1.99, picked by `apps/desktop/rust-toolchain.toml`, because gpui-pre 0.3.12 uses std APIs newer than 1.96. A first build compiles GPUI and takes several minutes.
-- **Environment:** `T3AGENT37_DATA_DIR` points at another data folder. `T3AGENT37_KEEP_PANEL_OPEN=1` keeps the panel up when you click elsewhere (for recordings). `T3A_DEBUG=1` logs where the panel was placed. `RUST_LOG` sets log levels.
+- **The command** is the same binary: given a command (`target/debug/t3agent37 list`) it's the command, without one the app. Built without the `panel` feature it's the command alone, and a bare `t3agent37` prints its help. To try `serve` next to the running app, give it a data folder and port of its own: `T3AGENT37_DATA_DIR=<dir> T3AGENT37_MCP_PORT=47399 t3agent37 serve`, and the same two for the commands that talk to it. The key goes in with `t3agent37 setup < <key file>`; delete that folder after.
+- **Environment:** `T3AGENT37_DATA_DIR` points at another data folder, `T3AGENT37_MCP_PORT` the MCP server (and the command) at another port. `T3AGENT37_KEEP_PANEL_OPEN=1` keeps the panel up when you click elsewhere (for recordings). `T3A_DEBUG=1` logs where the panel was placed. `RUST_LOG` sets log levels.
 - **Outside a bundle** (`cargo run`), notifications go through `osascript` (shown as Script Editor's) and Start at login refuses: both need the bundle.
 - **App data:** `~/Library/Application Support/dev.t3agent37.app/`. It holds `agent37-key`, `state.json`, `t3-token` (the app's read-only session on the desktop T3 server) and `machines/` (captures per machine).
 - **On a VM:** everything lives in `/root/.t3agent37/`, including `boot.sh`, the watchdog, `t3.pid`, the machine's name and `app-version`, the version of the t3agent37 that last provisioned it (an older one leaves its scripts alone, for when several computers share the machine).
 - **Ports on the VM:** T3 `3773`, watchdog `3774`, heartbeat `3775` (public, answers 204), wake link `3776` (public, static page), inbox `3777` (public while a repo's issues, a webhook task or the start URL needs it; acts only on signed GitHub deliveries, T3 webhook paths, which T3 checks, and `/start` with the start URL's token in its path or an `Authorization: Bearer` header).
-- **Ports on this computer:** MCP server at `http://127.0.0.1:47370/mcp`, machine proxies from `47371` up.
+- **Ports on this computer:** MCP server at `http://127.0.0.1:47370/mcp`, and `/cli` on the same port for the `t3agent37` command (the same tools, answered once a call is done); machine proxies from `47371` up.
 
 ## Releasing
 
@@ -61,7 +65,8 @@ The Release workflow (`.github/workflows/release.yml`) then builds and publishes
 
 - **The update key** is the one thing that can't be replaced: every installed copy accepts only updates signed with it. Keep a copy in a password manager. `release-macos.sh` checks the key it's given against the public half shipped in the app (`UPDATE_KEY`) before building.
 - **On a Mac instead** (the fallback): the one-time setup is in the script's header, then `scripts/release-macos.sh --publish` in `apps/desktop`. It pushes the tag itself, which starts the workflow too: reject that run. Without `--publish` it builds and notarizes into `target/release/dist` only.
-- **How updates reach people:** the app (Sparkle 2.10, in `Contents/Frameworks`, loaded by `shell.m`) checks `https://github.com/dagurleo/t3agent37/releases/latest/download/appcast.xml` once a day, and "Check for Updates…" in the menu-bar item's menu or Settings checks now. The site's download button links to `releases/latest/download/t3agent37.dmg`. Both rely on every release having those two files under those names.
+- **How updates reach people:** the app (Sparkle 2.10, in `Contents/Frameworks`, loaded by `shell.m`) checks `https://github.com/dagurleo/t3agent37/releases/latest/download/appcast.xml` once a day, and "Check for Updates…" in the menu-bar item's menu or Settings checks now. The site's download button links to `releases/latest/download/t3agent37.dmg`. `install.sh` (at the repo's root, run from GitHub's raw URL) downloads `t3agent37-macos.tar.gz`, `t3agent37-linux-x86_64.tar.gz` or `t3agent37-linux-arm64.tar.gz` and its `.sha256` from `releases/latest/download/`; the command doesn't update itself. All of it relies on every release having those files under those names.
+- **The command's builds:** the workflow's `linux` jobs build it on GitHub's x86_64 and arm64 Ubuntu runners (`--no-default-features`) before the approval, and `release-macos.sh` builds the macOS one for both chips, signs it with the Developer ID and notarizes it (in a zip: a bare program can't be stapled), into `target/release/dist-cli`, after the appcast so Sparkle never sees it. The Linux ones come in through `EXTRA_ASSETS_DIR`.
 - **Build numbers** are commit counts on `main`, so they only go up. Sparkle compares them.
 - **The site's download button** points at the latest release, so deploy the site (`bun run deploy` in `apps/web`) only once the first release is out.
 
@@ -90,8 +95,9 @@ apps/desktop/                 the app: one Rust package (library = the backend, 
       projects.rs, link.rs, capture.rs, work.rs
     proxy/                    t3boat's sleep-aware T3 proxy (only upstream.rs changed)
     bin/t3agent37-dev.rs      the backend headless, for development
-    bin/t3agent37/            the menu-bar app (GPUI)
-      main.rs                 startup, one instance at a time, the menu-bar item, showing and hiding the panel
+    bin/t3agent37/            the menu-bar app (GPUI), and the `t3agent37` command
+      main.rs                 a command goes to cli/; else the app: one instance at a time, the menu-bar item, showing and hiding the panel
+      cli/                    the command: mod.rs (the commands and their help), client.rs (the running t3agent37, at /cli), show.rs (list, details), serve.rs (serve, --install, setup), args.rs
       backend.rs              the backend on its own tokio runtime: setup, events, commands
       model.rs                what the panel does with a machine: actions, labels, numbers
       theme.rs                brand tokens and fonts
@@ -105,8 +111,9 @@ apps/desktop/                 the app: one Rust package (library = the backend, 
 apps/web/                     the site, t3agent37.dagurleo.com (React 19 + Vite, prerendered): see "The site" below
   src/panel/                  the React port of the panel, restored from 41635c4, on its mock backend only
 .github/workflows/
-  ci.yml                      on each pull request and push to main: the app's tests on a Mac, and the site's build
-  release.yml                 on a v* tag: the signed, notarized release (see "Releasing")
+  ci.yml                      on each pull request and push to main: the app's tests on a Mac, the command's on Linux, and the site's build
+  release.yml                 on a v* tag: the signed, notarized release (see "Releasing"), and the command's builds
+install.sh                    installs the `t3agent37` command from the latest release (macOS, Linux)
 ```
 
 ## The site
@@ -138,6 +145,7 @@ A new command touches all of these. The MCP test counts tools, so it fails until
 3. `src/bin/t3agent37/model.rs`: an `Action` constructor with its label and busy text, if it's a button.
 4. The view that shows it (`ui/`), and any toast it needs in `Panel::track` (`ui/mod.rs`).
 5. If agents should have it: `src/mcp.rs`, a `Call` variant, a `tool(...)` entry and the tool count in its test.
+6. If the command should have it (it needs step 5): `cli/mod.rs`, an entry in `COMMANDS` and its arm in `run`.
 
 ## Agent37 behaviors verified live
 

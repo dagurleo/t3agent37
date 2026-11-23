@@ -285,7 +285,7 @@ impl Panel {
         self.state = state;
         if let View::Machine(id) = &self.view {
             if self.state.machines.iter().any(|m| &m.id == id) {
-                self.load_details(cx);
+                self.load_details(false, cx);
             } else {
                 // deleted while its details were open
                 self.view = View::List;
@@ -362,7 +362,7 @@ impl Panel {
         self.view_serial += 1;
         match view {
             View::Machine(id) => {
-                self.load_details(cx);
+                self.load_details(true, cx);
                 if self.latest_thread.as_ref().is_none_or(|(of, _)| *of != id) {
                     self.latest_thread = None;
                     let lookup = self.backend.latest_thread(id.clone());
@@ -417,9 +417,10 @@ impl Panel {
         cx.notify();
     }
 
-    fn load_details(&mut self, cx: &mut Context<Self>) {
+    /// `opened`: the view just opened (else it's a refresh, on every change).
+    fn load_details(&mut self, opened: bool, cx: &mut Context<Self>) {
         let View::Machine(id) = &self.view else { return };
-        match self.backend.details(id) {
+        match self.backend.details(id, opened) {
             Ok(d) => {
                 self.details = Some(d);
                 self.details_failing = false;

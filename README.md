@@ -4,7 +4,7 @@ t3agent37 is a menu-bar app that creates cloud machines on your [Agent37 Cloud](
 
 Chat in T3 Code as usual. A message to a sleeping machine wakes it in a few seconds; running work finishes with your laptop closed.
 
-**[t3agent37.dagurleo.com](https://t3agent37.dagurleo.com)** · [Download](https://github.com/dagurleo/t3agent37/releases/latest) · macOS 13+
+**[t3agent37.dagurleo.com](https://t3agent37.dagurleo.com)** · [Download](https://github.com/dagurleo/t3agent37/releases/latest) · macOS 13+ · [the command](#the-command): macOS and Linux
 
 ## Where it comes from, and why
 
@@ -39,12 +39,13 @@ What was kept and what changed:
 - Notifications when a machine's agents finish, when your Agent37 wallet runs low, and when a machine stays awake for hours
 - Cost per machine, today and this month, and your wallet balance. Each machine's details also show what each of its projects cost this month: the time its agents worked, plus the idle minutes after, at the machine's hourly rate
 - An MCP server, so agents on your computer can manage machines and open their ports
+- A `t3agent37` command for the terminal: the machines, their details and what they're doing, waking and sleeping them, projects, sign-ins, GitHub issues and the rest, alongside the app. Without the app (on Linux, or a Mac you'd rather not run it on), `t3agent37 serve` runs t3agent37 in its place, at login if you like
 
 ## What you need
 
 - [T3 Code](https://t3.codes) desktop app
 - An [Agent37 Cloud](https://www.agent37.com) account and an API key from [its dashboard](https://www.agent37.com/dashboard/cloud/api-keys). The key stays on this computer (in the app's data folder, readable by you only) and is never copied to a machine.
-- macOS 13 or later. (The panel is GPUI, which runs on Windows and Linux too, but the menu-bar item and the panel's placement are macOS code for now.)
+- macOS 13 or later for the app. (The panel is GPUI, which runs on Windows and Linux too, but the menu-bar item and the panel's placement are macOS code for now.) The command alone runs on macOS and Linux (x86_64 and arm64), with T3 Code's desktop app on the same computer.
 
 ## Install
 
@@ -53,6 +54,28 @@ Download `t3agent37.dmg` from the [latest release](https://github.com/dagurleo/t
 It updates itself: it looks for a new release once a day, and **Check for Updates…** (right-click the menu-bar icon) or **Settings → Check now** looks right away.
 
 To build it yourself instead, see [CONTRIBUTING.md](CONTRIBUTING.md#build-install-test-macos). It lives in the menu bar and can run next to t3boat.
+
+### The command
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/dagurleo/t3agent37/main/install.sh | sh
+```
+
+That puts `t3agent37` in `~/.local/bin`, from the latest release, checked against its checksum; run it again to update. With the app installed, the app's own program is the command too, and updates with it:
+
+```sh
+ln -s /Applications/t3agent37.app/Contents/MacOS/t3agent37 ~/.local/bin/t3agent37
+```
+
+The command works with the app while the app runs. Without the app:
+
+```sh
+t3agent37 setup              # your Agent37 API key, asked for (hidden) and kept on this computer
+t3agent37 serve --install    # t3agent37 runs now and at every login (launchd on macOS, systemd on Linux)
+t3agent37 create raven       # a machine; T3 Code asks you to add it
+```
+
+`serve` is what the app does, without the panel: T3 Code reaches the machines through it, it puts them to sleep and wakes them, and it answers the command and coding agents. Its log is `~/Library/Logs/t3agent37.log` on macOS and `journalctl --user -u t3agent37` on Linux; `t3agent37 serve` alone runs it in the terminal instead. Run either the app or `serve`, not both: the second stops at once.
 
 ## Usage
 
@@ -111,6 +134,20 @@ To use a machine from a second computer, install t3agent37 there with the same A
 
 To see what a machine is doing, open its details. While it's up, **now** lists the threads its agents work on, each with its project, model, how long it has run and what it's up to ("working", "needs your approval", "waits on subagents"), with any command it left running (a dev server). Under them: its CPU, memory and disk, and its busiest processes, which say what's behind "busy CPU"; at the top right, when it woke and what woke it (T3 Code, GitHub, the start URL, a webhook, scheduled work). **finished** lists what its agents finished in the last day; while it sleeps, as of when it went to sleep. Click a thread to open it in T3 Code.
 
+From a terminal, `t3agent37 help` lists the commands. For example:
+
+```sh
+t3agent37 list                          # the machines, what each is doing, and the costs
+t3agent37 details skiff                 # its agents, what it's doing and finished, its load, projects and costs
+t3agent37 wake skiff                    # and sleep, keep-awake skiff 30, auto-sleep skiff off
+t3agent37 add-project skiff Tantalum    # one of `t3agent37 projects`
+t3agent37 sign-in skiff github          # in your browser; the GitHub code shows in the terminal
+t3agent37 issues skiff Tantalum on --model claude-opus-5-5 --effort high
+t3agent37 start-url skiff on            # prints the URL: it's a secret
+```
+
+A machine is its name or id. `list`, `details` and `projects` take `--json` for what the MCP tools give agents. A long command (creating a machine, a sign-in, adding a project) shows the machine's progress as it goes, and ^C stops the waiting, not the work. `details` never wakes a machine, and leaves secrets out (the webhooks' waking URLs, the start URL): `wake-link` and `start-url` print theirs when you ask, and `details --json` has them all.
+
 Settings has the notifications (wallet line, hours awake, agents finishing), whether projects get set up when they're added, and the look: the panel's size (Standard, Large or Huge; the expand button at the top of the list, ⌘+ and ⌘− change it while it's open) and the animated rooftop instead of the still skyline.
 
 ## Pricing, roughly
@@ -168,6 +205,9 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 - Accounts per machine, on the machine's side: the account, plan and usage limits read from what T3 recorded on skiff. Starting Claude's and GitHub's logins again over an existing sign-in, then canceling, kept the old sign-in, and the login's end was recorded.
 - T3 Code's own update, on the machine's side: switching a running machine to T3's service launcher (T3 Connect came back by itself), the server then reporting that it can update itself, T3's update call taking it from one nightly to the next (back in about 5 s), provisioning afterwards with the older desktop version keeping the newer T3 without a restart, and a reboot of the boot container starting the new version.
 
+- The `t3agent37` command, on a Mac: `list`, `details`, `status`, `sizes` and its errors against the running app (against an older app too, through MCP's own calls), and through a link to the app's own program. `setup` refused an empty key, checked the real one with Agent37 and saved it readable by its owner only. `serve`, with a data folder and port of its own: it listed the account's machines as made on another computer, refused a second `serve`, and stopped on SIGTERM. `serve --install` and `--uninstall` with launchd: with the app running, the one launchd started stopped at once and wasn't started again.
+- The command alone on Linux (arm64, in Docker): its tests and a release build.
+
 **Not tried yet:**
 - Resize, delete, create, sign-ins, T3 Connect and the wake link from the GPUI panel. (They worked from the Tauri panel; the GPUI one calls the same backend functions.)
 - The GPUI panel's setup view (first run, no key yet).
@@ -180,6 +220,7 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 - The start URL from the panel (turning it on, replacing it, turning it off), and from Grok itself. Turning it on and replacing it worked through the MCP tool.
 - A second computer for real: the list's **on your agent37 account** section and **Add here**, and T3 Code there adding the machine.
 - A thread opening in T3 Code from the **now** and **finished** sections.
+- The command's `create`, `delete`, `sign-in`, `add-project`, `issues`, `port` and `connect` (each is the MCP tool of the same name, which were tried), and its progress line while one runs. `serve --install` with systemd on a Linux desktop, and `serve` there with T3 Code's Linux app. The release's builds of the command and `install.sh`, which come with the next release.
 - The Graphite look, the panel's sizes and the animated rooftop setting on screen (built and unit-tested; the mockups were reviewed).
 - A GitHub token limited to some repos, end to end: GitHub's filled-in page, the panel's field, gh on the machine with the token, the repos it lists, and pull request CI from GitHub Actions. What was tried: the machine's check of its GitHub login (on skiff, gh's own sign-in read as reaching every repo) and GitHub refusing a made-up token (401).
 - The "Update N machines?" dialog in T3 Code updating a machine through the proxy (the same update call was made on the machine itself). Also, under the launcher: creating a machine, moving one to a newer desktop version by provisioning, and turning on T3 Connect.
@@ -188,6 +229,7 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 - **Previews list only servers T3's agents and terminals started.** Others (Docker, a database) open by number.
 - **GitHub issues are a prototype.** Only an issue's title and description go to the agent, not its comments. On the pull request, CI counts through check runs (GitHub Actions, Cloudflare and other GitHub apps), not the older commit statuses some services post, and only the first 100 reviews and comments are read. The machine's GitHub login covers all its repos unless it's signed in with a token limited to some (**Some repos only…**). A label renamed in the settings leaves the old one in the repo.
 - **The details don't say what an agent is saying or running right now**, only its thread's state: T3's thread list leaves the latest message out. Open the thread in T3 Code for that. They also miss what T3 doesn't track and what's quick: a server an agent starts as a plain shell command (not with its agent's background option) isn't listed under its thread, and subagents that finish within the app's 5-second refresh aren't counted (both seen on skiff).
+- **The command needs T3 Code's desktop app on the same computer**, as the app does: t3agent37 adds the machines to it and reads its projects. `serve`'s notifications go through `osascript` on macOS (shown as Script Editor's) and `notify-send` on Linux, and the command doesn't update itself (run `install.sh` again, or link the app's program, which does).
 - **Project costs are an estimate.** They're awake time at the machine's current hourly rate, so a resize reprices the month, and the disk (billed asleep too) isn't split between projects. Time with several projects' agents working is split evenly between them.
 - **Usage limits are as of the machine's last check.** T3 checks them while the machine is awake, so a sleeping machine's details say how old they are, and use of the same plan elsewhere (your laptop, another machine) shows up only at the next check.
 - **Some things stay on each computer:** notifications, ports forwarded to it, and what it recorded for T3 Code while the machine sleeps. A computer that didn't see the machine's last work wakes it once to catch up, as after a laptop was closed.

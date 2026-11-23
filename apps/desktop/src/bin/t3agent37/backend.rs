@@ -1,10 +1,11 @@
 //! The app model of `t3agent37_lib` on a tokio runtime of its own, and the snapshot of it the
 //! panel draws: startup, the backend's events, and the commands the panel runs.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::channel::mpsc::UnboundedSender;
 use t3agent37_lib::agent37::{Agent37, KEYS_PAGE};
@@ -22,6 +23,13 @@ pub use t3agent37_lib::store::Preview;
 use t3agent37_lib::store::Settings;
 
 const COSTS_EVERY: Duration = Duration::from_secs(300);
+/// While a machine's details stay open, how often they look again at what the machine doesn't
+/// push to this app (the servers listening there, its agents, settings and webhook tasks). The
+/// details load again on every change, every few seconds: each look on each would pile up
+/// commands on the machine (the settings are a command over Agent37's exec) and keep it busy.
+const DETAILS_REFRESH_EVERY: Duration = Duration::from_secs(60);
+/// Opening the details looks again, unless they were just open.
+const DETAILS_REOPEN_GAP: Duration = Duration::from_secs(5);
 
 /// What the backend tells the GPUI side.
 pub enum Signal {
@@ -153,6 +161,8 @@ struct Inner {
     mcp: Mutex<McpStatus>,
     /// One `init` at a time: the startup check and "Check again" must not both build an App.
     init_lock: tokio::sync::Mutex<()>,
+    /// When each machine's details last looked again at the machine.
+    details_refreshed: Mutex<HashMap<String, Instant>>,
     signals: UnboundedSender<Signal>,
 }
 
@@ -189,6 +199,7 @@ impl Backend {
             account: Mutex::new(None),
             mcp: Mutex::new(McpStatus::default()),
             init_lock: tokio::sync::Mutex::new(()),
+            details_refreshed: Mutex::new(HashMap::new()),
             signals,
         });
         rt.spawn(init(inner.clone()));
@@ -255,14 +266,26 @@ impl Backend {
         self.run(move |inner| async move { Ok(inner.app()?.machine(&id).map_err(err)?.latest_thread().await) })
     }
 
-    /// For the details view; never wakes the machine. Looks again at the servers listening on
-    /// it when it runs.
-    pub fn details(&self, id: &str) -> Res<Details> {
+    /// For the details view; never wakes the machine. `opened`: the view just opened, so it
+    /// looks again at the servers listening on the machine, its agents, settings and webhook
+    /// tasks, when it runs; while it stays open, once a minute (`DETAILS_REFRESH_EVERY`).
+    pub fn details(&self, id: &str, opened: bool) -> Res<Details> {
         let app = self.inner.app()?;
         let d = app.details(id).map_err(err)?;
         let mut issue_models = Vec::new();
         if let Ok(machine) = app.machine(id) {
             issue_models = machine.issue_models();
+        }
+        let gap = if opened { DETAILS_REOPEN_GAP } else { DETAILS_REFRESH_EVERY };
+        let due = {
+            let mut last = self.inner.details_refreshed.lock().unwrap();
+            let due = last.get(id).is_none_or(|at| at.elapsed() >= gap);
+            if due {
+                last.insert(id.to_owned(), Instant::now());
+            }
+            due
+        };
+        if let Some(machine) = app.machine(id).ok().filter(|_| due) {
             self.rt.spawn(async move {
                 machine.refresh_servers().await;
                 machine.refresh_agents().await;

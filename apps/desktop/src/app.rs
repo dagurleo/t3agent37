@@ -34,6 +34,16 @@ pub enum Setup {
     InstallT3,
 }
 
+/// Where t3agent37 keeps its key, machines and state, for the app and the `t3agent37` command
+/// alike: `~/Library/Application Support/dev.t3agent37.app/` on macOS (the Tauri app's folder
+/// before it, so its key, machines and state carried over), `~/.local/share/dev.t3agent37.app/`
+/// on Linux. `T3AGENT37_DATA_DIR` points elsewhere.
+pub fn data_dir() -> std::path::PathBuf {
+    std::env::var_os("T3AGENT37_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| dirs::data_dir().expect("a data folder").join("dev.t3agent37.app"))
+}
+
 /// The key was checked with Agent37 when it was saved; a revoked one shows up as failing calls.
 pub async fn check_setup(data_dir: &std::path::Path) -> (Setup, Option<Agent37>, Option<T3Desktop>) {
     let Some(a37) = Agent37::load(data_dir) else { return (Setup::ConnectAgent37, None, None) };
@@ -1107,13 +1117,24 @@ fn human_secs(s: u64) -> String {
     }
 }
 
-/// On Linux through GLib, as `gio open` does: `xdg-open` outside GNOME and KDE takes a scheme
-/// with a digit in it, like `t3code:`, for a file name.
+/// On Linux with `gio open` where there is one (GLib's, on most desktops): `xdg-open` outside
+/// GNOME and KDE takes a scheme with a digit in it, like `t3code:`, for a file name. Else
+/// `xdg-open`.
 #[cfg(target_os = "linux")]
 pub fn open_url(url: &str) -> Result<()> {
-    use gtk::gio;
-    gio::AppInfo::launch_default_for_uri(url, None::<&gio::AppLaunchContext>)
-        .map_err(|e| anyhow::anyhow!("could not open {url}: {e}"))
+    let opened = |program: &str, args: &[&str]| {
+        std::process::Command::new(program)
+            .args(args)
+            .arg(url)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    if opened("gio", &["open"]) || opened("xdg-open", &[]) {
+        return Ok(());
+    }
+    bail!("could not open {url}: no gio or xdg-open here, or no browser for it")
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1178,7 +1199,9 @@ fn default_browser() -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The command-line flag that opens a private window in this browser, if it has one.
+/// The command-line flag that opens a private window in this browser, if it has one. (By
+/// macOS bundle id: only macOS asks.)
+#[cfg(any(target_os = "macos", test))]
 fn private_flag(bundle: &str) -> Option<&'static str> {
     let b = bundle.to_ascii_lowercase();
     let chromium = ["com.google.chrome", "org.chromium.", "com.brave.browser", "com.vivaldi.vivaldi"];
