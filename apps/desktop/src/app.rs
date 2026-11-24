@@ -16,6 +16,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+mod copy;
+mod lifetime;
+mod limits;
+
+pub use copy::BenchResult;
+pub use lifetime::{parse_duration, span};
+pub use limits::this_month;
+
 /// Clear of t3boat's ports (47731+): T3 Code may know a port from either app.
 const FIRST_PORT: u16 = 47371;
 /// Machines ever created here: deleted ones keep their port.
@@ -93,6 +101,19 @@ pub struct MachineView {
     /// gives it to agents.
     #[serde(skip)]
     pub activity: Option<ActivityView>,
+    /// The user's other machines its agents may use (T3's links from it), with what they may
+    /// do there; and the machines that may use it.
+    pub links: Vec<crate::machine::peers::LinkView>,
+    pub used_by: Vec<crate::machine::peers::LinkView>,
+    /// Its own monthly limit in dollars, and what it spent this month as limits count it.
+    pub month_limit: Option<f64>,
+    pub month_spent: f64,
+    /// Why it's stopped and kept off, when it reached a spending limit.
+    pub paused: Option<String>,
+    /// A throwaway machine: when it's deleted (unix seconds).
+    pub delete_at: Option<i64>,
+    /// The machine it was copied from.
+    pub copied_from: Option<String>,
 }
 
 /// `detail` as `template` with `{left}` filled in: the time left until `ends_at` (unix ms).
@@ -136,6 +157,15 @@ pub struct Costs {
     pub balance: Option<f64>,
 }
 
+/// What `App::project_env` does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EnvAction {
+    List,
+    Copy,
+    Remove,
+}
+
 /// A machine being created: it holds its name and local port until it exists.
 struct Creating {
     name: String,
@@ -166,6 +196,10 @@ pub struct App {
     leftover_sandboxes: Mutex<Vec<String>>,
     /// t3agent37's machines on the account that this computer doesn't have, as last listed.
     elsewhere: Mutex<Vec<ElsewhereMachine>>,
+    /// The UTC month the user was warned about nearing the limit on all machines.
+    total_limit_warned: Mutex<Option<String>>,
+    /// Throwaway machines whose time is up while work still runs there, already told about.
+    overdue_noted: Mutex<HashSet<String>>,
 }
 
 /// A machine t3agent37 made on this Agent37 account that this computer doesn't have: one made on
@@ -214,6 +248,8 @@ impl App {
             retired_ports: Mutex::new(state.retired_ports),
             leftover_sandboxes: Mutex::new(leftover),
             elsewhere: Mutex::new(Vec::new()),
+            total_limit_warned: Mutex::new(state.total_limit_warned),
+            overdue_noted: Mutex::new(HashSet::new()),
         });
         for record in state.machines {
             app.spawn(app.runtime(record));
@@ -303,6 +339,7 @@ impl App {
             spend,
             retired_ports,
             pending_sandboxes,
+            total_limit_warned: self.total_limit_warned.lock().unwrap().clone(),
         };
         if let Err(e) = self.store.save(&state) {
             tracing::error!("saving state: {e:#}");
@@ -353,7 +390,8 @@ impl App {
     }
 
     /// Creates a machine, then adds this computer's T3 projects `projects` (ids) to it.
-    pub async fn create_machine(self: &Arc<Self>, name: &str, size: &str, projects: Vec<String>) -> Result<Arc<MachineRuntime>> {
+    /// `delete_after`: a throwaway one, deleted that many seconds from now (`app/lifetime.rs`).
+    pub async fn create_machine(self: &Arc<Self>, name: &str, size: &str, projects: Vec<String>, delete_after: Option<u64>) -> Result<Arc<MachineRuntime>> {
         if !valid_name(name) {
             bail!("machine names are 1-32 lowercase letters, digits or dashes, starting with a letter or digit");
         }
@@ -371,6 +409,8 @@ impl App {
                 |step| self.set_creating_step(name, step),
             )
             .await?;
+            let mut record = record;
+            record.upkeep.delete_at = delete_after.map(|s| chrono::Utc::now().timestamp() + s as i64);
             // Counted from the start: usage settles hourly, and a machine deleted before its first
             // hour shows up only once it is gone.
             let (day, _) = periods();
@@ -531,7 +571,11 @@ impl App {
             .ok_or_else(|| anyhow!("no project {project} with a git remote"))?;
         project.scripts = self.shared.t3.project_scripts(&project).await;
         let (files, mut failed) = self.shared.t3.files_to_copy(&project).await?;
-        failed.extend(machine.add_project(&project, files).await?);
+        let written = machine.add_project(&project, files.clone()).await?;
+        if let Some(on) = machine.projects().into_iter().find(|p| p.repo_key.as_deref() == Some(&project.repo_key) && p.status.is_none()) {
+            machine.note_env(&on.id, crate::machine::env::arrived(&project, &files, &written));
+        }
+        failed.extend(written);
         if !failed.is_empty() {
             self.shared.notify(
                 format!("Some of {}'s files didn't reach {}", project.title, machine.record().name),
@@ -539,6 +583,69 @@ impl App {
             );
         }
         Ok(project)
+    }
+
+    /// A project's env files on a machine: what it got from this computer (`List`, never
+    /// waking it), this computer's copied over again (`Copy`), or those taken off it (`Remove`).
+    /// Only names, never values.
+    pub async fn project_env(&self, machine: &str, project: &str, action: EnvAction) -> Result<String> {
+        let m = self.machine(machine)?;
+        let name = m.record().name;
+        let on = m
+            .projects()
+            .into_iter()
+            .find(|p| p.id == project || p.title.eq_ignore_ascii_case(project))
+            .ok_or_else(|| anyhow!("{name} has no project {project}"))?;
+        let root = on.root.clone().ok_or_else(|| anyhow!("{} isn't set up on {name} yet", on.title))?;
+        let issues_note = if on.issues.is_some() {
+            " Its GitHub issues are on: an issue's text reaches agents there that can read these, so label only issues you trust."
+        } else {
+            ""
+        };
+        match action {
+            EnvAction::List => Ok(match m.env_of(&on.id) {
+                Some(env) => {
+                    let files: Vec<String> = env.files.iter().map(|f| format!("{} ({})", f.path, if f.names.is_empty() { "no variables".into() } else { f.names.join(", ") })).collect();
+                    format!("{} on {name} has these env files from this computer: {}.{issues_note}", on.title, files.join("; "))
+                }
+                None => format!("{} on {name} has no env files from this computer that t3agent37 knows of.", on.title),
+            }),
+            EnvAction::Copy => {
+                let local = self
+                    .local_projects()
+                    .await?
+                    .into_iter()
+                    .find(|p| Some(&p.repo_key) == on.repo_key.as_ref())
+                    .ok_or_else(|| anyhow!("this computer's T3 Code has no copy of {}", on.title))?;
+                let before = m.env_of(&on.id);
+                let (files, mut failed) = self.shared.t3.files_to_copy(&local).await?;
+                if files.is_empty() {
+                    return Ok(format!("{} has no env files on this computer to copy.", local.title));
+                }
+                failed.extend(m.copy_env(&on.id, &root, &local, files).await?);
+                let after = m.env_of(&on.id).map(|e| e.files).unwrap_or_default();
+                let changed = after.iter().filter(|f| !before.as_ref().is_some_and(|b| b.files.iter().any(|g| g.path == f.path && g.hash == f.hash))).count();
+                let variables: usize = after.iter().map(|f| f.names.len()).sum();
+                let paths: Vec<&str> = after.iter().map(|f| f.path.as_str()).collect();
+                let mut text = format!(
+                    "Copied {} env file{} to {} on {name} ({changed} new or changed): {}, {variables} variable{}.",
+                    after.len(),
+                    if after.len() == 1 { "" } else { "s" },
+                    on.title,
+                    paths.join(", "),
+                    if variables == 1 { "" } else { "s" }
+                );
+                if !failed.is_empty() {
+                    text.push_str(&format!(" Not copied: {}.", failed.join("; ")));
+                }
+                text.push_str(issues_note);
+                Ok(text)
+            }
+            EnvAction::Remove => {
+                let n = m.remove_env(&on.id, &root).await?;
+                Ok(format!("Deleted {n} env file{} from {} on {name}.", if n == 1 { "" } else { "s" }, on.title))
+            }
+        }
     }
 
     /// Opens T3 Code's own "add backend" confirmation for this machine.
@@ -597,7 +704,16 @@ impl App {
     }
 
     pub fn views(&self) -> Vec<MachineView> {
-        let mut views: Vec<MachineView> = self.machines().iter().map(|m| view(m)).collect();
+        let mut views: Vec<MachineView> = self
+            .machines()
+            .iter()
+            .map(|m| {
+                let mut v = view(m);
+                (v.links, v.used_by) = self.links_of(m);
+                v.month_spent = self.month_spend(m);
+                v
+            })
+            .collect();
         for c in self.creating.lock().unwrap().iter() {
             views.push(MachineView {
                 id: String::new(),
@@ -615,6 +731,13 @@ impl App {
                 github_code: None,
                 signing_in: None,
                 activity: None,
+                links: Vec::new(),
+                used_by: Vec::new(),
+                month_limit: None,
+                month_spent: 0.0,
+                paused: None,
+                delete_at: None,
+                copied_from: None,
             });
         }
         views
@@ -763,6 +886,8 @@ pub struct MachineDetails {
     /// What it's doing: threads at work and what each is up to, what finished lately, what woke
     /// it, its load and busiest processes. Asleep, as it was before it went to sleep.
     pub activity: Option<ActivityView>,
+    /// The env files its projects got from this computer: names only (`machine/env.rs`).
+    pub env: Vec<crate::store::ProjectEnv>,
 }
 
 /// A machine's start URL (`machine/start.rs`), which starts threads in its projects from anywhere.
@@ -933,6 +1058,7 @@ impl App {
             }),
             previews: record.previews,
             activity,
+            env: record.upkeep.env,
         })
     }
 
@@ -945,6 +1071,14 @@ impl App {
             open_url(&url)?;
         }
         Ok(url)
+    }
+
+    /// What's checked every minute: machines awake for hours, spending limits, throwaway
+    /// machines whose time is up.
+    pub async fn every_minute(&self) {
+        self.check_awake_alerts();
+        self.check_limits().await;
+        self.check_lifetimes().await;
     }
 
     /// Warns about a machine that has been awake for `awake_alert_hours` in a row, once per
@@ -1004,6 +1138,11 @@ fn view(m: &MachineRuntime) -> MachineView {
     use MachineState::*;
     let (state, detail) = match (m.power(), &watchdog) {
         (Power::Missing, _) => (Missing, "Deleted on Agent37".to_owned()),
+        (_, _) if r.upkeep.paused.is_some() => {
+            let p = r.upkeep.paused.as_ref().expect("paused");
+            let whose = if p.total { "your" } else { "its" };
+            (Asleep, format!("Stopped · reached {whose} {} limit", crate::store::dollars(p.limit_usd)))
+        }
         (_, _) if m.last_error().is_some() => (Error, m.last_error().unwrap_or_default()),
         (Power::Running, Some(w)) if w.agents_unknown => (Working, "T3 not answering · stays up 30m max".to_owned()),
         (Power::Running, Some(w)) if w.cpu_busy => (Working, busy_cpu_line(w)),
@@ -1059,6 +1198,13 @@ fn view(m: &MachineRuntime) -> MachineView {
         github_code: m.github_code(),
         signing_in: m.signing_in(),
         activity,
+        links: Vec::new(),
+        used_by: Vec::new(),
+        month_limit: r.upkeep.month_limit_usd,
+        month_spent: 0.0,
+        paused: r.upkeep.paused.as_ref().map(|p| p.why(&r.name)),
+        delete_at: r.upkeep.delete_at,
+        copied_from: r.upkeep.copied_from.clone(),
     }
 }
 

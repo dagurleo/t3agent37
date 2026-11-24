@@ -1,7 +1,8 @@
 // node --test activity.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { busiest, describeProcess, isLive, parseMeminfo, parseStat, summarizeThreads, threadState } from "./activity.mjs";
+import { DatabaseSync } from "node:sqlite";
+import { busiest, describeProcess, describeSteps, isLive, parseMeminfo, parseStat, readSteps, summarizeThreads, threadState } from "./activity.mjs";
 
 const NOW = Date.parse("2026-11-23T10:00:00Z");
 const thread = (over) => ({
@@ -97,4 +98,33 @@ test("memory in use from /proc/meminfo", () => {
   const text = "MemTotal:        8126464 kB\nMemFree:         3909632 kB\nMemAvailable:    6836224 kB\n";
   assert.deepEqual(parseMeminfo(text), { usedMb: 1260, totalMb: 7936 });
   assert.equal(parseMeminfo("nothing"), null);
+});
+
+test("what a thread is running and last said", () => {
+  const step = (type, status, over = {}) => ({ type, status, title: null, toolName: null, input: null, ...over });
+  // Newest first, as T3's ordinals go.
+  assert.deepEqual(
+    describeSteps([step("command_execution", "running", { input: "cargo test --workspace" }), step("assistant_message", "completed")], "Running the tests now."),
+    { doing: "running cargo test --workspace", said: "Running the tests now." },
+  );
+  assert.deepEqual(describeSteps([step("dynamic_tool", "running", { title: "Read src/main.rs", toolName: "Read" })], null), { doing: "Read src/main.rs", said: null });
+  assert.equal(describeSteps([step("reasoning", "running")], "x").doing, "thinking");
+  assert.equal(describeSteps([step("web_search", "pending")], null).doing, "web search");
+  // Nothing under way: nothing it's doing, only what it said.
+  assert.deepEqual(describeSteps([step("command_execution", "completed", { input: "ls" })], "Done.\n\nAll   good."), { doing: null, said: "Done. All good." });
+  assert.equal(describeSteps([], "x".repeat(300)).said.length, 200);
+});
+
+test("reads a thread's steps from T3's database", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`CREATE TABLE orchestration_v2_projection_turn_items (thread_id TEXT, ordinal INTEGER, type TEXT, status TEXT, payload_json TEXT)`);
+  const add = db.prepare("INSERT INTO orchestration_v2_projection_turn_items VALUES (?, ?, ?, ?, ?)");
+  add.run("t1", 1, "user_message", "completed", JSON.stringify({ text: "Benchmark it" }));
+  add.run("t1", 2, "assistant_message", "completed", JSON.stringify({ text: "I'll run openssl speed first." }));
+  add.run("t1", 3, "command_execution", "running", JSON.stringify({ title: null, input: "openssl speed -seconds 3 sha256", output: "x".repeat(10000) }));
+  add.run("t2", 1, "assistant_message", "completed", JSON.stringify({ text: "Other thread" }));
+  assert.deepEqual(readSteps(db, "t1"), { doing: "running openssl speed -seconds 3 sha256", said: "I'll run openssl speed first." });
+  assert.deepEqual(readSteps(db, "nope"), { doing: null, said: null });
+  // An older T3, without the table.
+  assert.deepEqual(readSteps(new DatabaseSync(":memory:"), "t1"), { doing: null, said: null });
 });

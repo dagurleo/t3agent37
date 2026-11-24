@@ -4,9 +4,11 @@
 pub mod activity;
 mod capture;
 mod connect;
+pub mod env;
 pub mod hooks;
 pub mod issues;
 mod link;
+pub mod peers;
 pub mod preview;
 pub mod projects;
 pub mod provision;
@@ -541,6 +543,11 @@ impl MachineRuntime {
         // Checked under the lock: a delete holding it retires the machine.
         if self.power() == Power::Missing {
             bail!("the machine no longer exists on Agent37");
+        }
+        // Stopped at a spending limit: nothing wakes it until the limit is raised or the month
+        // is over (`app/limits.rs`). Not a failed wake, so no notification for it either.
+        if let Some(p) = self.record().upkeep.paused {
+            bail!("{}", p.why(&self.record().name));
         }
         if let Some((e, at)) = self.wake_failure.lock().unwrap().clone() {
             if at.elapsed() < WAKE_COOLDOWN {

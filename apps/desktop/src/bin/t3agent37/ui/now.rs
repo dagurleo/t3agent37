@@ -46,9 +46,22 @@ impl Panel {
     pub(super) fn finished(&mut self, m: &MachineView, a: &ActivityView, tk: &Tokens, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let tk = *tk;
         let now = model::now_ms();
-        let mut items: Vec<AnyElement> = a.finished.iter().enumerate().map(|(i, f)| self.finished_row(m, i, f, now, &tk, cx).into_any_element()).collect();
+        // The latest few; the rest on a click.
+        let shown = if self.finished_all { a.finished.len() } else { a.finished.len().min(3) };
+        let mut items: Vec<AnyElement> = a.finished.iter().take(shown).enumerate().map(|(i, f)| self.finished_row(m, i, f, now, &tk, cx).into_any_element()).collect();
         if items.is_empty() {
             items.push(note(&tk).child("Nothing finished in the last day.").into_any_element());
+        }
+        if a.finished.len() > shown {
+            let more = a.finished.len() - shown;
+            items.push(
+                kit::line()
+                    .child(kit::link("finished-more", format!("{more} more from the last day"), false, &tk).px_0().text_size(px(11.5)).on_click(cx.listener(|this, _, _, cx| {
+                        this.finished_all = true;
+                        cx.notify();
+                    })))
+                    .into_any_element(),
+            );
         }
         // Asleep: as of when it went to sleep, which the list can't refresh.
         let extra = (!a.live).then(|| kit::caption(&tk).flex_none().child(format!("before it slept, {}", model::clock(a.as_of))).into_any_element());
@@ -99,6 +112,9 @@ impl Panel {
                             .child(div().text_color(tk.accent_text).when(t.needs_you, |d| d.font_weight(FontWeight::SEMIBOLD)).child(t.state.clone()))
                             .children(about.into_iter().map(|a| div().child(format!("· {a}")))),
                     )
+                    // What it's running right now, and what its agent last said.
+                    .when_some(t.doing.clone(), |d, doing| d.child(div().truncate().text_size(px(11.5)).font_family(MONO).text_color(tk.fg).child(format!("▸ {doing}"))))
+                    .when_some(t.said.clone(), |d, said| d.child(div().truncate().text_size(px(11.5)).text_color(tk.muted).child(format!("“{said}”"))))
                     .children(t.background.iter().map(|b| kit::caption(&tk).truncate().child(format!("↳ {b}")))),
             )
     }

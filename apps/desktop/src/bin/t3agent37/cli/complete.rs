@@ -38,6 +38,12 @@ fn slots(command: &str) -> &'static [Slot] {
         "issues" => &[Machine, MachineProject, ON_OFF],
         "start-url" => &[Machine, Words(&["on", "off", "replace"])],
         "add-mcp" => &[Words(&["claude-code", "codex"])],
+        "link" | "unlink" => &[Machine, Machine],
+        "copy" | "bench" => &[Machine],
+        "delete-after" => &[Machine, Words(&["30m", "1h", "2h", "1d", "never"])],
+        "limit" => &[Machine, Words(&["5", "10", "25", "50", "off"])],
+        "env" => &[Machine, MachineProject],
+        "links" => &[Machine],
         "completions" => &[Words(&["zsh", "bash", "fish"])],
         "help" => &[Command],
         _ => &[],
@@ -50,6 +56,9 @@ fn flag_slot(flag: &str) -> Option<Slot> {
         "size" => Some(Slot::Size),
         "project" => Some(Slot::LocalProject),
         "effort" => Some(Slot::Words(&["low", "medium", "high", "xhigh", "max"])),
+        "access" => Some(Slot::Words(&["read", "ask", "edits", "auto", "full"])),
+        "sizes" => Some(Slot::Size),
+        "delete-after" => Some(Slot::Words(&["30m", "1h", "2h", "4h", "1d"])),
         _ => None,
     }
 }

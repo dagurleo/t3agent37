@@ -254,7 +254,18 @@ pub fn section_head(title: &str, n: Option<usize>, extra: Option<AnyElement>, tk
         .items_center()
         .gap(px(8.))
         .min_h(px(20.))
-        .child(div().flex().items_center().text_size(px(11.5)).line_height(relative(1.2)).text_color(tk.muted).child(title.to_string()).children(n.filter(|n| *n > 0).map(|n| count(n, tk))))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .line_height(relative(1.2))
+                .text_color(tk.fg)
+                .child(title.to_string())
+                .children(n.filter(|n| *n > 0).map(|n| count(n, tk))),
+        )
         .child(div().flex_1().h(px(1.)).bg(tk.line))
         .children(extra)
 }

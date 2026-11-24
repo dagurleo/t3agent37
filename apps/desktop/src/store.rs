@@ -84,6 +84,130 @@ pub struct Machine {
     /// Its start URL, while it's on (`machine/start.rs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<StartLink>,
+    /// T3's links from this machine to others (its agents may work there), as last read from it
+    /// (`machine/peers.rs`): the user's other machines among them, and any the user made.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<PeerLink>,
+    /// Whether it takes links from the user's other machines: its inbox passes them to its T3.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub accepts_links: bool,
+    /// Its spending limit, when it's a throwaway one, what it was copied from, and its
+    /// projects' env files.
+    #[serde(flatten, default)]
+    pub upkeep: Upkeep,
+}
+
+/// How t3agent37 looks after a machine beyond running it: its spending limit (and whether it was
+/// stopped at one), when a throwaway machine is deleted, and the env files its projects got.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Upkeep {
+    /// Dollars a UTC month, as Agent37 bills it: stopped there (`app/limits.rs`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub month_limit_usd: Option<f64>,
+    /// Stopped for reaching a limit, its own or the one on all machines: not woken until that
+    /// limit is raised or the month is over.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paused: Option<Pause>,
+    /// The UTC month (`2026-11`) it was warned about nearing its own limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_warned: Option<String>,
+    /// A throwaway machine: deleted at this time (unix seconds), or once its agents finish if they
+    /// still work then (`app/lifetime.rs`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delete_at: Option<i64>,
+    /// The "deleted soon" notification went out for `delete_at`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub delete_warned: bool,
+    /// The machine it was copied from, by name (`app/copy.rs`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub copied_from: Option<String>,
+    /// The env files each of its projects got from this computer, as last copied: names only,
+    /// never values (`machine/env.rs`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<ProjectEnv>,
+}
+
+/// Why a machine is stopped and kept off.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Pause {
+    /// The UTC month it reached the limit in, `2026-11`: the next one lets it wake again.
+    pub month: String,
+    pub limit_usd: f64,
+    /// The limit on all machines together, not its own.
+    pub total: bool,
+}
+
+impl Pause {
+    /// Why the machine stays off, and what lets it wake.
+    pub fn why(&self, name: &str) -> String {
+        let (this, next) = month_names(&self.month);
+        if self.total {
+            format!(
+                "your machines reached their {} limit for {this} together, so {name} is stopped: raise the limit in Settings, or it can wake in {next}",
+                dollars(self.limit_usd)
+            )
+        } else {
+            format!("{name} reached its {} limit for {this} and is stopped: raise its limit, or it can wake in {next}", dollars(self.limit_usd))
+        }
+    }
+}
+
+/// An amount of dollars as people write it: "$10", "$12.50", and a fraction of a cent as it is
+/// ("$0.0005"), not "$0.00".
+pub fn dollars(v: f64) -> String {
+    if v.fract() == 0.0 {
+        format!("${v:.0}")
+    } else if v >= 0.01 {
+        format!("${v:.2}")
+    } else {
+        format!("${}", (v * 1e6).round() / 1e6)
+    }
+}
+
+/// "November" and "December" for `2026-11`.
+pub fn month_names(month: &str) -> (String, String) {
+    let first = chrono::NaiveDate::parse_from_str(&format!("{month}-01"), "%Y-%m-%d").unwrap_or_default();
+    let next = first.checked_add_months(chrono::Months::new(1)).unwrap_or(first);
+    (first.format("%B").to_string(), next.format("%B").to_string())
+}
+
+/// A project's env files on a machine, as t3agent37 last copied them there.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectEnv {
+    /// T3's project id on the machine.
+    pub project_id: String,
+    pub files: Vec<EnvFile>,
+    /// Unix seconds.
+    pub copied_at: i64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvFile {
+    /// Relative to the project's folder.
+    pub path: String,
+    /// The variables it sets, in order: their names, never their values.
+    pub names: Vec<String>,
+    /// A hash of its contents, to tell whether this computer's copy changed since.
+    pub hash: String,
+}
+
+/// One of T3's links from a machine to another T3 server, as T3 records it there.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerLink {
+    /// The other server's environment id: a machine's `environment_id`.
+    pub environment_id: String,
+    /// T3's access level: what the linking machine's agents may do there.
+    pub access: String,
+    pub linked_at: String,
+    /// When the link's token runs out (RFC 3339); it can't be renewed, only made again.
+    pub expires_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
 }
 
 /// What a fine-grained GitHub token can push to, as its machine tested it repository by
@@ -226,6 +350,9 @@ pub struct Settings {
     pub animated_rooftop: bool,
     /// How big the panel opens.
     pub panel_size: PanelSize,
+    /// Dollars a UTC month for all machines together, as Agent37 bills them: every machine is
+    /// stopped there; None: no limit.
+    pub month_limit_usd: Option<f64>,
 }
 
 impl Default for Settings {
@@ -238,6 +365,7 @@ impl Default for Settings {
             set_up_projects: true,
             animated_rooftop: false,
             panel_size: PanelSize::Standard,
+            month_limit_usd: None,
         }
     }
 }
@@ -284,6 +412,9 @@ impl PanelSize {
 /// The choices Settings offers.
 pub const WALLET_ALERTS: [Option<f64>; 4] = [None, Some(5.0), Some(10.0), Some(25.0)];
 pub const AWAKE_ALERTS: [Option<u32>; 4] = [None, Some(1), Some(3), Some(8)];
+/// Monthly limits, for all machines (Settings) and for one (its details).
+pub const TOTAL_LIMITS: [Option<f64>; 6] = [None, Some(10.0), Some(25.0), Some(50.0), Some(100.0), Some(250.0)];
+pub const MACHINE_LIMITS: [Option<f64>; 6] = [None, Some(2.0), Some(5.0), Some(10.0), Some(25.0), Some(50.0)];
 
 /// One instance's spend as last looked up. Kept after the instance is gone (its machine deleted)
 /// so the totals still count it until its month is over.
@@ -314,6 +445,9 @@ pub struct State {
     /// Instances of creates still running: deleted at the next start if the app quit or crashed
     /// before the create finished.
     pub pending_sandboxes: Vec<String>,
+    /// The UTC month (`2026-11`) the user was warned about nearing the limit on all machines.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_limit_warned: Option<String>,
 }
 
 pub struct Store {

@@ -5,7 +5,7 @@ use anyhow::{bail, Result};
 
 impl MachineRuntime {
     /// Runs `f` while telling the watchdog the machine is in use, so it does not fall asleep meanwhile.
-    pub(super) async fn kept_awake<T>(&self, f: impl Future<Output = T>) -> T {
+    pub(crate) async fn kept_awake<T>(&self, f: impl Future<Output = T>) -> T {
         let mut beat = tokio::time::interval(HEARTBEAT_EVERY);
         tokio::pin!(f);
         loop {
@@ -13,6 +13,21 @@ impl MachineRuntime {
                 out = &mut f => return out,
                 _ = beat.tick() => self.send_activity(false).await,
             }
+        }
+    }
+
+    /// Puts it back to sleep after something woke it for nothing (a copy's first heartbeat):
+    /// as `sleep_now`, which leaves it up if work started there meanwhile. Waits for Agent37 to
+    /// say it runs.
+    pub async fn back_to_sleep(&self) {
+        for _ in 0..20 {
+            if matches!(self.refresh_power().await, Ok(Power::Running)) {
+                if let Err(e) = self.sleep_now().await {
+                    tracing::info!("{} stays up: {e:#}", self.id());
+                }
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         }
     }
 

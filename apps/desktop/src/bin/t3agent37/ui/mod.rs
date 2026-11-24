@@ -33,6 +33,19 @@ const FPS: u64 = 12;
 /// The strip's slide between full and compact, as `--strip-ease`.
 const STRIP_EASE: Duration = Duration::from_millis(220);
 
+/// The tabs of a machine's details (`details::details_tabs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DetailsTab {
+    Activity,
+    Projects,
+    Accounts,
+    Connections,
+}
+
+impl DetailsTab {
+    const ALL: [DetailsTab; 4] = [DetailsTab::Activity, DetailsTab::Projects, DetailsTab::Accounts, DetailsTab::Connections];
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum View {
     List,
@@ -67,6 +80,10 @@ struct NewForm {
     name: Entity<InputState>,
     size: String,
     picked: Vec<String>,
+    /// A copy of this machine (id, name) instead of a new one.
+    copy_of: Option<(String, String)>,
+    /// A throwaway machine: deleted this many seconds after it's made.
+    delete_after: Option<u64>,
     _sub: Subscription,
 }
 
@@ -137,6 +154,13 @@ pub struct Panel {
     rooftop_on: Option<bool>,
     roof_scroll: ScrollHandle,
     details_scroll: ScrollHandle,
+    /// The details' tab, Activity when a machine opens.
+    details_tab: DetailsTab,
+    /// Whether "finished" lists everything, not just the latest few.
+    finished_all: bool,
+    /// The screenshot aid's state (`screenshot_aid`).
+    screenshot_opened: bool,
+    screenshot_paged: Instant,
     /// The agent the wide roof last scrolled to.
     roof_followed: Option<String>,
     /// Bumped on each view change, so the new view rises in.
@@ -167,6 +191,7 @@ impl Panel {
                     if this.visible && !this.reduce_motion {
                         cx.notify();
                     }
+                    this.screenshot_aid(cx);
                 });
                 if alive.is_err() {
                     break;
@@ -233,6 +258,10 @@ impl Panel {
             rooftop_on: None,
             roof_scroll: ScrollHandle::new(),
             details_scroll: ScrollHandle::new(),
+            details_tab: DetailsTab::Activity,
+            finished_all: false,
+            screenshot_opened: false,
+            screenshot_paged: Instant::now(),
             roof_followed: None,
             view_serial: 0,
             visible: false,
@@ -328,6 +357,38 @@ impl Panel {
         cx.notify();
     }
 
+    /// For screenshots of a machine's details, which are taller than the panel: with
+    /// `T3AGENT37_OPEN_MACHINE=<name>` the panel opens on that machine's details, and with
+    /// `T3AGENT37_PAGE_EVERY=<secs>` it then pages down through each tab every so many seconds,
+    /// on to the next tab after the end. Neither does anything otherwise.
+    fn screenshot_aid(&mut self, cx: &mut Context<Self>) {
+        if let Ok(name) = std::env::var("T3AGENT37_OPEN_MACHINE")
+            && !self.screenshot_opened
+            && let Some(id) = self.state.machines.iter().find(|m| m.name.eq_ignore_ascii_case(&name)).map(|m| m.id.clone())
+        {
+            self.screenshot_opened = true;
+            self.view = View::Machine(id);
+            self.view_serial += 1;
+            self.load_details(true, cx);
+            cx.notify();
+        }
+        let Some(every) = std::env::var("T3AGENT37_PAGE_EVERY").ok().and_then(|s| s.parse::<f64>().ok()) else { return };
+        if !matches!(self.view, View::Machine(_)) || self.screenshot_paged.elapsed().as_secs_f64() < every {
+            return;
+        }
+        self.screenshot_paged = Instant::now();
+        let (offset, max, page) = (self.details_scroll.offset(), self.details_scroll.max_offset(), self.details_scroll.bounds().size.height);
+        // Past the end of a tab: the next tab, from its top.
+        if -offset.y >= max.y - px(1.) {
+            let i = DetailsTab::ALL.iter().position(|t| *t == self.details_tab).unwrap_or(0);
+            self.details_tab = DetailsTab::ALL[(i + 1) % DetailsTab::ALL.len()];
+            self.details_scroll.set_offset(point(px(0.), px(0.)));
+        } else {
+            self.details_scroll.set_offset(point(px(0.), (offset.y - page * 0.85).max(-max.y)));
+        }
+        cx.notify();
+    }
+
     /// Shows another view; each starts fresh.
     fn go(&mut self, view: View, window: &mut Window, cx: &mut Context<Self>) {
         self.go_picking(view, false, window, cx)
@@ -335,6 +396,10 @@ impl Panel {
 
     /// `pick_project`: a machine's details, opened with the project picker up.
     fn go_picking(&mut self, view: View, pick_project: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(view, View::Machine(_)) && view != self.view {
+            self.details_tab = if pick_project { DetailsTab::Projects } else { DetailsTab::Activity };
+            self.finished_all = false;
+        }
         let compact = |v: &View| *v != View::List;
         if compact(&view) != compact(&self.view) {
             let now = self.strip_height();
@@ -513,6 +578,15 @@ impl Panel {
                         this.toast(text, false, cx)
                     }
                     (Ok(_), Cmd::TurnOnConnect) => this.toast(format!("{name} is reachable from your other devices"), false, cx),
+                    // What the backend said: what it spent, when it goes, which files.
+                    (Ok(Some(text)), Cmd::Limit(_) | Cmd::DeleteAfter(_) | Cmd::Env { .. }) => this.toast(text, false, cx),
+                    (Ok(_), Cmd::Link { to_name, access, .. }) => {
+                        let text = match access {
+                            Some(a) => format!("{name}'s agents can use {to_name} now: {}", a.about()),
+                            None => format!("{name} no longer uses {to_name}"),
+                        };
+                        this.toast(text, false, cx)
+                    }
                     (Ok(url), Cmd::WakeLink { renew }) => {
                         if let Some(url) = url {
                             cx.write_to_clipboard(ClipboardItem::new_string(url));

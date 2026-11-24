@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs on an Agent37 VM (agent37-ubuntu) as root. Idempotent; also used to upgrade a machine.
 #   T3A37_SECRET=<watchdog-secret> provision.sh <t3-version> <sleep-after-secs> <heartbeat-url> <mint-upstream-token:0|1> <name> [<app-version>]
-# Expects watchdog.mjs, issues.mjs, start.mjs and activity.mjs next to it. Prints one JSON line:
+# Expects watchdog.mjs, issues.mjs, start.mjs, activity.mjs and peers.mjs next to it. Prints one JSON line:
 # {"environmentId", "t3Version" (what runs: the one asked for, or a newer one found), "upstreamToken"?},
 # or {"environmentId", "skipped": <version>} when a newer t3agent37 provisioned it (below).
 #
@@ -207,6 +207,8 @@ restart_watchdog="$(install_if_changed "$here/watchdog.mjs" "$dir/watchdog.mjs" 
 [ "$(install_if_changed "$here/start.mjs" "$dir/start.mjs" 600)" = 0 ] || restart_watchdog=1
 # What the machine is doing, for t3agent37's details; the watchdog reports it.
 [ "$(install_if_changed "$here/activity.mjs" "$dir/activity.mjs" 600)" = 0 ] || restart_watchdog=1
+# Links from the user's other machines, which the inbox passes to T3.
+[ "$(install_if_changed "$here/peers.mjs" "$dir/peers.mjs" 600)" = 0 ] || restart_watchdog=1
 
 cat >"$dir/boot.sh.new" <<'BOOT'
 #!/bin/bash

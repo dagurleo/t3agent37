@@ -62,7 +62,7 @@ async fn command(app: &Arc<App>, words: &[String]) -> anyhow::Result<()> {
         }
         Some("create") => {
             let size = words.get(2).cloned().unwrap_or_else(|| "small".into());
-            let m = app.create_machine(&arg(1), &size, Vec::new()).await?;
+            let m = app.create_machine(&arg(1), &size, Vec::new(), None).await?;
             println!("CREATED {} on port {}", m.id(), m.record().local_port);
         }
         Some("pair") => app.pair(&*app.machine(&arg(1))?)?,

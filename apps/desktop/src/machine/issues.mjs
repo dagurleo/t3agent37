@@ -4,7 +4,8 @@
 // <task>/<token>, and passes them to T3 here: through this public URL a delivery wakes the
 // machine, where T3's own URL (through T3 Connect's relay) waits until something else wakes it.
 // T3 checks the token, signature and filters, logs the delivery and runs the task. And it serves
-// the machine's start URL (start.mjs), which starts threads in its projects from anywhere.
+// the machine's start URL (start.mjs), which starts threads in its projects from anywhere, and the
+// links the user's other machines make to this one's T3 (peers.mjs).
 //
 // For each repo the user turned issues on for, t3agent37 makes a webhook on GitHub (with this
 // machine's own gh login) that sends the repo's issue, comment, review and CI events to a public
@@ -36,6 +37,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isStartPath, startHandler } from "./start.mjs";
+import { handlePeer, isPeerPath } from "./peers.mjs";
 
 export const INBOX_PORT = 3777;
 const DIR = join(homedir(), ".t3agent37");
@@ -625,6 +627,7 @@ export function startInbox({ touch, log, wokeForNothing = () => {}, noteWake = (
         noteWake("a webhook");
         return forwardHook(req, body, res, { log, wokeForNothing });
       }
+      if (isPeerPath(req.url)) return handlePeer(req, body, res, { waitForT3, noteWake, wokeForNothing, log });
       if (isStartPath(req.url)) return handleStart(req, body, res, { touch, log, wokeForNothing, run, waitForT3, machineName: machineName() });
       if (req.method !== "POST") return refuse(405, "POST only");
       const { repos } = readConfig();

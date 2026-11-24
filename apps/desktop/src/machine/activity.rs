@@ -38,6 +38,10 @@ pub struct LiveThread {
     /// Commands it left running: a dev server, a watcher.
     pub background: Vec<String>,
     pub branch: Option<String>,
+    /// What it's running right now ("running cargo test", "Read src/main.rs", "thinking"), and
+    /// what its agent last said, cut short. Older watchdogs don't say.
+    pub doing: Option<String>,
+    pub said: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -108,6 +112,9 @@ pub struct ThreadView {
     pub subagents: u32,
     pub background: Vec<String>,
     pub branch: Option<String>,
+    /// What it's running now, and what its agent last said.
+    pub doing: Option<String>,
+    pub said: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -157,6 +164,8 @@ impl Activity {
                     subagents: t.subagents,
                     background: t.background.clone(),
                     branch: t.branch.clone(),
+                    doing: t.doing.clone(),
+                    said: t.said.clone(),
                 })
                 .collect(),
             finished: self

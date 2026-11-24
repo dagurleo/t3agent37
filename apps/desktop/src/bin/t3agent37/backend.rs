@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use futures::channel::mpsc::UnboundedSender;
 use t3agent37_lib::agent37::{Agent37, KEYS_PAGE};
 pub use t3agent37_lib::app::{AgentLogin, ElsewhereMachine, ProjectCost, StartInfo, Webhook};
-use t3agent37_lib::app::{self, App, Costs, GITHUB, MachineView, Setup};
+use t3agent37_lib::app::{self, App, Costs, EnvAction, GITHUB, MachineView, Setup};
+use t3agent37_lib::machine::peers::Access;
 use t3agent37_lib::machine::Event;
 use t3agent37_lib::machine::issues::{IssueSettings, ModelChoice};
 pub use t3agent37_lib::machine::preview::LocalServer;
@@ -105,6 +106,8 @@ pub struct Details {
     pub webhooks: Vec<Webhook>,
     /// Its start URL, while it's on.
     pub start: Option<StartInfo>,
+    /// The env files its projects got from this computer: names only.
+    pub env: Vec<t3agent37_lib::store::ProjectEnv>,
 }
 
 /// A command for one machine.
@@ -144,6 +147,17 @@ pub enum Cmd {
     /// Signs its GitHub in with a token the user made (one limited to some repositories);
     /// resolves to who and how many repositories, for the toast.
     GithubToken(Secret),
+    /// Lets its agents use another of the user's machines (by id) as far as `access` says, or
+    /// not at all (`None`).
+    Link { to: String, to_name: String, access: Option<Access> },
+    /// Its own monthly spending limit in dollars, or none; resolves to what it spent, for the
+    /// toast.
+    Limit(Option<f64>),
+    /// Deleted this many seconds from now, or kept (`None`).
+    DeleteAfter(Option<u64>),
+    /// A project's env files: this computer's copied over again, or taken off it; resolves to
+    /// what was done.
+    Env { project: String, action: EnvAction },
 }
 
 pub type Res<T = ()> = Result<T, String>;
@@ -239,8 +253,18 @@ impl Backend {
         self.run(move |inner| act(inner, id, cmd))
     }
 
-    pub fn create_machine(&self, name: String, size: String, projects: Vec<String>) -> impl Future<Output = Res> + use<> {
-        self.run(move |inner| async move { inner.app()?.create_machine(&name, &size, projects).await.map(drop).map_err(err) })
+    pub fn create_machine(&self, name: String, size: String, projects: Vec<String>, delete_after: Option<u64>) -> impl Future<Output = Res> + use<> {
+        self.run(move |inner| async move { inner.app()?.create_machine(&name, &size, projects, delete_after).await.map(drop).map_err(err) })
+    }
+
+    /// A copy of the machine `source` (by id) named `name`, at `size`.
+    pub fn copy_machine(&self, source: String, name: String, size: String, delete_after: Option<u64>) -> impl Future<Output = Res> + use<> {
+        self.run(move |inner| async move { inner.app()?.copy_machine(&source, &name, Some(&size), delete_after, true).await.map(drop).map_err(err) })
+    }
+
+    /// The monthly limit on all machines together, or none.
+    pub fn set_total_limit(&self, usd: Option<f64>) -> impl Future<Output = Res<String>> + use<> {
+        self.run(move |inner| async move { inner.app()?.set_limit(None, usd).await.map_err(err) })
     }
 
     /// Adds a machine made with t3agent37 on another computer to this one; resolves to its name.
@@ -311,6 +335,7 @@ impl Backend {
             project_costs: d.project_costs,
             webhooks: d.webhooks,
             start: d.start,
+            env: d.env,
         })
     }
 
@@ -382,6 +407,10 @@ async fn act(inner: Arc<Inner>, id: String, cmd: Cmd) -> Res<Option<String>> {
         Cmd::WakeLink { renew } => return machine.wake_link(renew).await.map(Some).map_err(err),
         Cmd::Start { on, replace } => return machine.set_start(on, replace).await.map_err(err),
         Cmd::GithubToken(token) => return machine.sign_in_github_token(&token).await.map(Some).map_err(err),
+        Cmd::Link { to, access, .. } => return app.set_link(&id, &to, access).await.map(Some).map_err(err),
+        Cmd::Limit(usd) => return app.set_limit(Some(&id), usd).await.map(Some).map_err(err),
+        Cmd::DeleteAfter(secs) => return app.set_delete_after(&id, secs).map(Some).map_err(err),
+        Cmd::Env { project, action } => return app.project_env(&id, &project, action).await.map(Some).map_err(err),
         Cmd::Open { thread } => app.open_in_t3(&machine, thread.as_deref()),
         Cmd::Pair => app.pair(&machine),
         Cmd::Wake => machine.wake_for("Wake in t3agent37").await,
@@ -481,18 +510,20 @@ async fn events(inner: Arc<Inner>, app: Arc<App>, mut rx: tokio::sync::mpsc::Unb
     }
 }
 
-/// Costs and the account change slowly; refreshed on a timer.
+/// Costs and the account change slowly; refreshed on a timer. And links between machines that
+/// run out soon are made again.
 async fn background(inner: Arc<Inner>, app: Arc<App>) {
     let alerts = app.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(60)).await;
-            alerts.check_awake_alerts();
+            alerts.every_minute().await;
         }
     });
     loop {
         app.refresh_costs().await;
         refresh_account(&inner, &app.shared.a37).await;
+        app.renew_links().await;
         inner.changed();
         tokio::time::sleep(COSTS_EVERY).await;
     }

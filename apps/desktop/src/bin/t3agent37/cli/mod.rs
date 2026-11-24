@@ -107,9 +107,44 @@ const COMMANDS: &[Command] = &[
     },
     cmd(
         "create",
-        "create <name> [--size <size>] [--project <project>]...",
-        "A new machine, added to T3 Code (you confirm there), with projects from this computer's T3 Code",
-        &[("size", true), ("project", true)],
+        "create <name> [--size <size>] [--project <project>]... [--delete-after <time>]",
+        "A new machine, added to T3 Code (you confirm there), with projects from this computer's T3 Code. \
+         --delete-after (90m, 2h, 1d): a throwaway one, deleted then, or once its agents finish",
+        &[("size", true), ("project", true), ("delete-after", true)],
+        Group::Machines,
+    ),
+    cmd(
+        "copy",
+        "copy <machine> <name> [--size <size>] [--delete-after <time>]",
+        "A new machine that's a copy of one as it is now: its projects and their files, work not pushed, its \
+         sign-ins and tools, at its size or another, with a T3 identity of its own. A few minutes. --delete-after: \
+         a throwaway copy",
+        &[("size", true), ("delete-after", true)],
+        Group::Machines,
+    ),
+    cmd(
+        "bench",
+        "bench <machine> [--sizes <size,size,...>] [--project <project>] [--keep] [--timeout <minutes>] -- <command>",
+        "Time a command on copies of a machine at several sizes at once (small, large and huge unless --sizes \
+         says), in a project's folder or its home, then delete the copies (--keep keeps them). Each copy bills \
+         while it runs",
+        &[("sizes", true), ("project", true), ("keep", false), ("timeout", true)],
+        Group::Machines,
+    ),
+    cmd(
+        "delete-after",
+        "delete-after <machine> <time | never>",
+        "Delete a machine some time from now (90m, 2h, 1d), or once its agents finish if they still work then; \
+         never keeps it",
+        &[],
+        Group::Machines,
+    ),
+    cmd(
+        "limit",
+        "limit [<machine>] [<dollars> | off]",
+        "A monthly spending limit, for one machine or (without one) all of them together: at it, machines are \
+         stopped until you raise it or the month is over, and you hear about it at 80%. Alone: the limits",
+        &[("json", false)],
         Group::Machines,
     ),
     cmd(
@@ -121,6 +156,18 @@ const COMMANDS: &[Command] = &[
     ),
     cmd("resize", "resize <machine> <size>", "Change its size: right away if it's idle, else at its next wake", &[], Group::Machines),
     cmd("sizes", "sizes", "The sizes a machine can have, and what each costs awake", &[], Group::Machines),
+    cmd(
+        "link",
+        "link <machine> <other> --access <read | ask | edits | auto | full>",
+        "Let a machine's agents use another of your machines, through T3's linked environments: read its \
+         threads (read), or start threads there that ask you before each change (ask), edit files but ask \
+         before commands (edits), run in T3's auto mode (auto) or run anything (full). Wakes both; again \
+         changes how far",
+        &[("access", true)],
+        Group::Machines,
+    ),
+    cmd("unlink", "unlink <machine> <other>", "Stop a machine using another: the link goes on both", &[], Group::Machines),
+    cmd("links", "links [<machine>] [--json]", "Which of your machines may use which, and how far", &[("json", false)], Group::Machines),
     cmd("wake", "wake <machine>", "Wake it, and wait until T3 serves there", &[], Group::Awake),
     cmd("sleep", "sleep <machine>", "Put it to sleep now (refused while an agent works there)", &[], Group::Awake),
     cmd(
@@ -151,6 +198,14 @@ const COMMANDS: &[Command] = &[
         "Sign an agent, or GitHub, in on the machine, in your browser. --other-account: a private window. --cancel \
          stops a sign-in that waits (its old sign-in stays)",
         &[("other-account", false), ("cancel", false)],
+        Group::Work,
+    ),
+    cmd(
+        "env",
+        "env <machine> <project> [--copy | --remove]",
+        "A project's env files on the machine and the variables they set, names only. --copy copies this \
+         computer's over them again; --remove deletes them there",
+        &[("copy", false), ("remove", false)],
         Group::Work,
     ),
     cmd(
@@ -325,6 +380,35 @@ async fn run(raw: Vec<String>) -> Result<i32> {
             print!("{script}");
             return Ok(0);
         }
+        "links" => {
+            let machine = a.maybe_word();
+            a.done().map_err(usage)?;
+            let v = b.json("list_machines", json!({})).await?;
+            if let Some(m) = machine.as_deref().filter(|m| show::find(&v, m).is_none()) {
+                bail!("no machine {m}: `t3agent37 list` lists them");
+            }
+            return print_json_or(&a, &v, |v| show::links(v, machine.as_deref()));
+        }
+        "link" => {
+            let from = a.word("a machine").map_err(usage)?;
+            let to = a.word("the machine it may use").map_err(usage)?;
+            a.done().map_err(usage)?;
+            let access = a.value("access").ok_or_else(|| usage("say how far with --access: read, ask, edits, auto or full".into()))?;
+            if t3agent37_lib::machine::peers::Access::parse(access).is_none() {
+                return Err(usage(format!("no access {access}: read, ask, edits, auto or full")));
+            }
+            if from.eq_ignore_ascii_case(&to) {
+                bail!("{from}'s agents work on it already");
+            }
+            eprintln!("{}", show::dim("Waking both and linking them; about half a minute."));
+            b.call("link_machines", json!({ "from": from, "to": to, "access": access })).await?
+        }
+        "unlink" => {
+            let from = a.word("a machine").map_err(usage)?;
+            let to = a.word("the machine it uses").map_err(usage)?;
+            a.done().map_err(usage)?;
+            b.call("unlink_machines", json!({ "from": from, "to": to })).await?
+        }
         "sizes" => {
             a.done().map_err(usage)?;
             for s in SIZES {
@@ -351,8 +435,111 @@ async fn run(raw: Vec<String>) -> Result<i32> {
             if let Some(size) = a.value("size") {
                 args["size"] = json!(size);
             }
+            if let Some(time) = a.value("delete-after") {
+                args["deleteAfterMinutes"] = json!(minutes(time).map_err(usage)?);
+            }
             eprintln!("{}", show::dim("Creating it takes about a minute; ^C stops waiting, not the creating."));
             watched(&b, &name, b.call("create_machine", args)).await?
+        }
+        "copy" => {
+            let machine = a.word("the machine to copy").map_err(usage)?;
+            let name = a.word("a name for the copy").map_err(usage)?;
+            a.done().map_err(usage)?;
+            let mut args = json!({ "machine": machine, "name": name });
+            if let Some(size) = a.value("size") {
+                args["size"] = json!(size);
+            }
+            if let Some(time) = a.value("delete-after") {
+                args["deleteAfterMinutes"] = json!(minutes(time).map_err(usage)?);
+            }
+            eprintln!("{}", show::dim("Copying takes a few minutes; ^C stops waiting, not the copying."));
+            watched(&b, &name, b.call("copy_machine", args)).await?
+        }
+        "bench" => {
+            let machine = a.word("a machine").map_err(usage)?;
+            let mut words = Vec::new();
+            while let Some(w) = a.maybe_word() {
+                words.push(w);
+            }
+            let command = words.join(" ");
+            if command.trim().is_empty() {
+                return Err(usage("say what to run after --: t3agent37 bench skiff -- cargo build --release".into()));
+            }
+            let sizes: Vec<String> = a.value("sizes").unwrap_or("small,large,huge").split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect();
+            for size in &sizes {
+                if !SIZES.iter().any(|s| s.id == size) {
+                    return Err(usage(format!("no size {size}: `t3agent37 sizes` lists them")));
+                }
+            }
+            let timeout: u32 = match a.value("timeout") {
+                Some(t) => t.parse().ok().filter(|t| (1..=1440).contains(t)).ok_or_else(|| usage(format!("{t}: a number of minutes, up to 1440")))?,
+                None => 60,
+            };
+            let hourly: f64 = sizes.iter().filter_map(|id| SIZES.iter().find(|s| s.id == id)).map(|s| s.hourly).sum();
+            let copies = if sizes.len() == 1 { format!("a {} copy", sizes[0]) } else { format!("{} copies ({})", sizes.len(), sizes.join(", ")) };
+            let after = if a.flag("keep") { "they're kept after" } else { "they're deleted after all the same" };
+            eprintln!(
+                "{}",
+                show::dim(&format!(
+                    "Making {copies} of {machine} and running it there: a few minutes, at ${hourly:.3} an hour while they run. ^C stops waiting, not the copies: {after}."
+                ))
+            );
+            let mut args = json!({ "machine": machine, "sizes": sizes, "command": command, "keep": a.flag("keep"), "timeoutMinutes": timeout });
+            if let Some(p) = a.value("project") {
+                args["project"] = json!(p);
+            }
+            let names: Vec<String> = sizes.iter().map(|s| format!("{}-{s}", machine.chars().take(24).collect::<String>())).collect();
+            watched_all(&b, &names, b.call("bench", args)).await?
+        }
+        "delete-after" => {
+            let machine = a.word("a machine").map_err(usage)?;
+            let time = a.word("a time (90m, 2h, 1d) or never").map_err(usage)?;
+            a.done().map_err(usage)?;
+            let minutes = match time.as_str() {
+                "never" | "off" => 0,
+                t => minutes(t).map_err(usage)?,
+            };
+            b.call("delete_after", json!({ "machine": machine, "minutes": minutes })).await?
+        }
+        "limit" => {
+            let first = a.maybe_word();
+            let second = a.maybe_word();
+            a.done().map_err(usage)?;
+            let dollars = |w: &str| -> Result<Option<f64>> {
+                match w {
+                    "off" | "none" => Ok(None),
+                    w => w.trim_start_matches('$').parse::<f64>().ok().filter(|v| *v > 0.0).map(Some).ok_or_else(|| usage(format!("{w}: a number of dollars, or off"))),
+                }
+            };
+            let is_amount = |w: &str| w == "off" || w == "none" || w.trim_start_matches('$').parse::<f64>().is_ok();
+            let (machine, value) = match (first, second) {
+                (None, _) => {
+                    let v = b.json("list_machines", json!({})).await?;
+                    return print_json_or(&a, &v, show::limits);
+                }
+                (Some(w), None) if is_amount(&w) => (None, dollars(&w)?),
+                (Some(m), None) => {
+                    let v = b.json("list_machines", json!({})).await?;
+                    let row = show::find(&v, &m).ok_or_else(|| anyhow!("no machine {m}: `t3agent37 list` lists them"))?;
+                    print!("{}", show::limit_of(row));
+                    return Ok(0);
+                }
+                (Some(m), Some(w)) => (Some(m), dollars(&w)?),
+            };
+            b.call("spending_limit", json!({ "machine": machine, "dollars": value })).await?
+        }
+        "env" => {
+            let machine = a.word("a machine").map_err(usage)?;
+            let project = a.word("a project on it").map_err(usage)?;
+            a.done().map_err(usage)?;
+            let action = match (a.flag("copy"), a.flag("remove")) {
+                (true, true) => return Err(usage("--copy or --remove, not both".into())),
+                (true, false) => "copy",
+                (false, true) => "remove",
+                (false, false) => "list",
+            };
+            let call = b.call("project_env", json!({ "machine": machine, "project": project, "action": action }));
+            if action == "list" { call.await? } else { watched(&b, &machine, call).await? }
         }
         "delete" => {
             let machine = a.word("a machine").map_err(usage)?;
@@ -495,6 +682,11 @@ fn to_you(text: &str) -> String {
         .replace("until the user removes it there", "until you remove it there")
 }
 
+/// "90m", "2h", "1d" as minutes, rounded up.
+fn minutes(time: &str) -> Result<u64, String> {
+    t3agent37_lib::app::parse_duration(time).map(|s| s.div_ceil(60)).ok_or_else(|| format!("{time}: a time such as 90m, 2h or 1d"))
+}
+
 fn on_off(word: &str) -> Result<bool, String> {
     match word {
         "on" => Ok(true),
@@ -560,6 +752,29 @@ async fn watched(b: &Backend, machine: &str, call: impl Future<Output = Result<S
     };
     clear(tty);
     result
+}
+
+/// `watched` for several machines at once (`bench`'s copies): a line each, as they change.
+async fn watched_all(b: &Backend, machines: &[String], call: impl Future<Output = Result<String>>) -> Result<String> {
+    let watch = async {
+        let mut last: std::collections::HashMap<String, String> = Default::default();
+        loop {
+            tokio::time::sleep(Duration::from_millis(2000)).await;
+            let Ok(list) = b.json("list_machines", json!({})).await else { continue };
+            for name in machines {
+                let Some(m) = show::find(&list, name) else { continue };
+                let line = show::progress(m, show::now_ms());
+                if last.get(name) != Some(&line) {
+                    eprintln!("{}", show::dim(&line));
+                    last.insert(name.clone(), line);
+                }
+            }
+        }
+    };
+    tokio::select! {
+        r = call => r,
+        _ = watch => unreachable!("watching doesn't end"),
+    }
 }
 
 fn clear(tty: bool) {

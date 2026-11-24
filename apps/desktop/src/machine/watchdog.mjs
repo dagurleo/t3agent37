@@ -18,7 +18,7 @@ import { DatabaseSync } from "node:sqlite";
 import { availableParallelism, homedir } from "node:os";
 import { join } from "node:path";
 import { startInbox } from "./issues.mjs";
-import { busiest, isLive, readLoad, readProcs, summarizeThreads } from "./activity.mjs";
+import { busiest, isLive, readLoad, readProcs, readSteps, summarizeThreads } from "./activity.mjs";
 
 const HOME = homedir();
 const CONFIG_PATH = join(HOME, ".t3agent37", "config.json");
@@ -268,7 +268,19 @@ async function checkWorking() {
   // Names the threads in t3agent37's "finished" notification.
   const list = top.slice(0, 10).map((t) => ({ id: String(t.id ?? ""), title: String(t.title ?? "") }));
   const projects = [...new Set(live.map((t) => String(t.projectId ?? "")).filter(Boolean))];
-  return { threads: top.length, subagents: live.length - top.length, list, projects, detail: summarizeThreads(shell.threads ?? []) };
+  const detail = summarizeThreads(shell.threads ?? []);
+  if (detail.working.length > 0) {
+    // What each is running and last said: T3's shell leaves both out.
+    let db = null;
+    try {
+      db = new DatabaseSync(DB_PATH, { readOnly: true });
+      for (const t of detail.working) Object.assign(t, readSteps(db, t.id));
+    } catch {
+    } finally {
+      db?.close();
+    }
+  }
+  return { threads: top.length, subagents: live.length - top.length, list, projects, detail };
 }
 
 /** The orchestration high-water marks T3 itself compares resume cursors against. */

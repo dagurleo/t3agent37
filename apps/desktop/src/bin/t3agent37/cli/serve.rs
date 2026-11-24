@@ -106,17 +106,19 @@ async fn events(app: Arc<App>, mut rx: tokio::sync::mpsc::UnboundedReceiver<Even
     }
 }
 
-/// Costs change slowly; and the "awake for hours" alerts.
+/// Costs change slowly; and the "awake for hours" alerts, and links between machines that run
+/// out soon, made again.
 async fn background(app: Arc<App>) {
     let alerts = app.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(60)).await;
-            alerts.check_awake_alerts();
+            alerts.every_minute().await;
         }
     });
     loop {
         app.refresh_costs().await;
+        app.renew_links().await;
         tokio::time::sleep(COSTS_EVERY).await;
     }
 }

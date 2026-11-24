@@ -13,6 +13,7 @@ const WATCHDOG_MJS: &str = include_str!("watchdog.mjs");
 const ISSUES_MJS: &str = include_str!("issues.mjs");
 const START_MJS: &str = include_str!("start.mjs");
 const ACTIVITY_MJS: &str = include_str!("activity.mjs");
+const PEERS_MJS: &str = include_str!("peers.mjs");
 /// This app's version, which provisioning leaves on the machine so an older t3agent37 on another
 /// computer doesn't put its older scripts back.
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -31,7 +32,7 @@ pub const INBOX_PORT: u16 = 3777;
 
 /// Identifies the provisioning scripts; a machine provisioned with others gets them on wake.
 pub fn revision() -> String {
-    let scripts = PROVISION_SH.bytes().chain(WATCHDOG_MJS.bytes()).chain(ISSUES_MJS.bytes()).chain(START_MJS.bytes()).chain(ACTIVITY_MJS.bytes());
+    let scripts = PROVISION_SH.bytes().chain(WATCHDOG_MJS.bytes()).chain(ISSUES_MJS.bytes()).chain(START_MJS.bytes()).chain(ACTIVITY_MJS.bytes()).chain(PEERS_MJS.bytes());
     let hash = fnv1a(scripts.chain(SLEEP_AFTER_SECS.to_string().bytes()));
     format!("{hash:016x}")
 }
@@ -179,6 +180,7 @@ fn command(name: &str, t3_version: &str, watchdog_secret: &str, heartbeat_url: &
         ("issues.mjs", ISSUES_MJS),
         ("start.mjs", START_MJS),
         ("activity.mjs", ACTIVITY_MJS),
+        ("peers.mjs", PEERS_MJS),
     ];
     let mut script = String::from("set -e; d=$(mktemp -d); trap 'rm -rf \"$d\"' EXIT\n");
     for (file, text) in files {
@@ -280,10 +282,26 @@ pub async fn create(
     progress("Installing T3 Code");
     let secret = random_token();
     let provisioned = run(a37, &id, name, t3_version, &secret, &heartbeat, true).await?;
-    let (upstream_url, watchdog_url) = urls(&id);
+    new_record(&id, name, size, local_port, provisioned, secret, heartbeat, t3_version)
+}
+
+/// The record of a machine just provisioned on `instance`, with the watchdog `secret` it was
+/// given: a new one, or a copy (`app/copy.rs`).
+#[allow(clippy::too_many_arguments)]
+pub fn new_record(
+    instance: &str,
+    name: &str,
+    size: &str,
+    local_port: u16,
+    provisioned: Provisioned,
+    secret: String,
+    heartbeat: String,
+    t3_version: &str,
+) -> Result<Machine> {
+    let (upstream_url, watchdog_url) = urls(instance);
     Ok(Machine {
-        id: id.clone(),
-        sandbox_id: id,
+        id: instance.to_owned(),
+        sandbox_id: instance.to_owned(),
         name: name.to_owned(),
         size: size.to_owned(),
         upstream_url,
@@ -314,6 +332,9 @@ pub async fn create(
         inbox_url: None,
         hooks: Vec::new(),
         start: None,
+        links: Vec::new(),
+        accepts_links: false,
+        upkeep: Default::default(),
     })
 }
 

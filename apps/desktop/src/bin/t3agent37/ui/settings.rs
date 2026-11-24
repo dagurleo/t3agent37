@@ -7,7 +7,7 @@ use gpui_kit::*;
 use t3agent37_lib::app::Setup;
 use t3agent37_lib::mcp::Client;
 
-use t3agent37_lib::store::{AWAKE_ALERTS, PanelSize, Settings, WALLET_ALERTS};
+use t3agent37_lib::store::{AWAKE_ALERTS, PanelSize, Settings, TOTAL_LIMITS, WALLET_ALERTS};
 
 use super::details::{segment, sub_header};
 use super::kit::{self, Btn, Icon, Size};
@@ -37,6 +37,21 @@ fn choices(
         );
     }
     div().flex().items_center().justify_between().gap(px(12.)).child(div().min_w_0().child(label)).child(seg)
+}
+
+impl Panel {
+    /// The monthly limit on all machines, or none, with what the backend says about it.
+    fn set_total_limit(&mut self, usd: Option<f64>, cx: &mut Context<Self>) {
+        let job = self.backend.set_total_limit(usd);
+        cx.spawn(async move |this, cx| {
+            let result = job.await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(text) => this.toast(text, false, cx),
+                Err(e) => this.toast(e, true, cx),
+            });
+        })
+        .detach();
+    }
 }
 
 /// A setting that is on or off, with a line on what it does.
@@ -213,6 +228,29 @@ impl Panel {
             .child(wallet)
             .child(awake)
             .child(finished);
+        // Through the backend, which stops or frees machines at once.
+        let total_limit = settings.month_limit_usd;
+        let mut limit_choices = div().flex().h(px(28.)).border_1().border_color(tk.frame);
+        for (i, usd) in TOTAL_LIMITS.iter().copied().enumerate() {
+            limit_choices = limit_choices.child(
+                segment(("total-limit", i), i == 0, total_limit == usd, &tk)
+                    .child(usd.map_or("none".to_owned(), |v| format!("${v:.0}")))
+                    .when(total_limit != usd, |s| s.on_click(cx.listener(move |this, _, _, cx| this.set_total_limit(usd, cx)))),
+            );
+        }
+        let spending = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .py(px(11.))
+            .border_t_1()
+            .border_color(tk.line)
+            .child(kit::caption(&tk).child("spending"))
+            .child(div().flex().flex_col().gap(px(2.)).child("Monthly limit, all machines").child(kit::hint(
+                "At it, every machine stops until you raise it or the month ends; you hear at 80%. Each machine can have its own, under Activity.",
+                &tk,
+            )))
+            .child(limit_choices);
         // The panel's size takes effect at once, so it isn't one of the plain `choices`.
         let current = settings.panel_size;
         let mut sizes = div().flex().flex_none().w(px(196.)).border_1().border_color(tk.frame);
@@ -288,6 +326,7 @@ impl Panel {
                     .child(mcp)
                     .child(look)
                     .child(alerts)
+                    .child(spending)
                     .child(projects)
                     .child(version)
                     .overflow_y_scrollbar()

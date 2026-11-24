@@ -6,12 +6,14 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use t3agent37_lib::app::{GITHUB, MachineState as State, MachineView};
+use t3agent37_lib::app::{self as app, GITHUB, MachineState as State, MachineView};
+use t3agent37_lib::store::MACHINE_LIMITS;
 use t3agent37_lib::machine::issues::{self, IssueSettings, ModelChoice};
+use t3agent37_lib::machine::peers::Access;
 use t3agent37_lib::machine::projects::MachineProject;
 
 use super::kit::{self, Btn, Icon, Size};
-use super::Panel;
+use super::{DetailsTab, Panel};
 use crate::backend::{Cmd, Details};
 use crate::model::{self, Action, machine_key, pixel_state};
 use crate::pixel::flat::{SPY_H, SPY_W, paint_flat_spy};
@@ -30,32 +32,55 @@ impl Panel {
         let latest = self.latest_thread.as_ref().filter(|(id, _)| *id == m.id).and_then(|(_, t)| t.clone());
         let primary = model::primary_action(m).unwrap_or_else(|| if m.paired { model::open_in(latest) } else { model::pair() });
 
-        let mut body: Vec<AnyElement> = vec![self.glance(m, d.as_ref(), &tk, window).into_any_element()];
-        // What it's doing, from its watchdog: while it's up, and what it finished before it slept.
-        if let Some(a) = m.activity.clone().filter(|_| !gone) {
-            if a.live {
-                body.push(self.now(m, &a, &tk, cx).into_any_element());
+        // A machine that's gone has only what it was: no tabs.
+        let tab = if gone { DetailsTab::Activity } else { self.details_tab };
+        let mut body: Vec<AnyElement> = Vec::new();
+        match tab {
+            DetailsTab::Activity => {
+                if let Some(why) = &m.paused {
+                    body.push(paused_banner(why, &tk).into_any_element());
+                }
+                body.push(self.glance(m, d.as_ref(), &tk, window).into_any_element());
+                // What it's doing, from its watchdog: while it's up, and what it finished before it slept.
+                if let Some(a) = m.activity.clone().filter(|_| !gone) {
+                    if a.live {
+                        body.push(self.now(m, &a, &tk, cx).into_any_element());
+                    }
+                    body.push(self.finished(m, &a, &tk, cx).into_any_element());
+                }
+                if !gone {
+                    if m.delete_at.is_some() {
+                        body.push(self.lifetime(m, busy, &tk, cx).into_any_element());
+                    }
+                    body.push(self.power(m, busy, &tk, cx).into_any_element());
+                    body.push(self.spending(m, busy, &tk, cx).into_any_element());
+                }
+                if gone && !m.projects.is_empty() {
+                    body.push(self.projects(m, pending, &tk, window, cx).into_any_element());
+                }
             }
-            body.push(self.finished(m, &a, &tk, cx).into_any_element());
+            DetailsTab::Projects => {
+                body.push(self.projects(m, pending, &tk, window, cx).into_any_element());
+                body.push(self.previews(m, d.as_ref(), pending, &tk, window, cx).into_any_element());
+            }
+            DetailsTab::Accounts => body.push(self.agents(m, d.as_ref(), pending, &tk, window, cx).into_any_element()),
+            DetailsTab::Connections => {
+                body.push(self.connect(m, d.as_ref(), pending, &tk, cx).into_any_element());
+                if let Some(section) = self.other_machines(m, pending, &tk, cx) {
+                    body.push(section.into_any_element());
+                }
+                body.push(self.start_url(m, d.as_ref(), pending, &tk, cx).into_any_element());
+                if let Some(d) = d.as_ref().filter(|d| !d.webhooks.is_empty()) {
+                    body.push(webhooks(m, d, &tk, cx).into_any_element());
+                }
+            }
         }
-        if !gone {
-            body.push(self.power(m, busy, &tk, cx).into_any_element());
+        if tab == DetailsTab::Activity {
+            body.push(self.more(m, busy, &tk, cx).into_any_element());
         }
-        body.push(self.agents(m, d.as_ref(), pending, &tk, window, cx).into_any_element());
-        body.push(self.connect(m, d.as_ref(), pending, &tk, cx).into_any_element());
-        if !gone {
-            body.push(self.previews(m, d.as_ref(), pending, &tk, window, cx).into_any_element());
-        }
-        if !(gone && m.projects.is_empty()) {
-            body.push(self.projects(m, pending, &tk, window, cx).into_any_element());
-        }
-        if !gone {
-            body.push(self.start_url(m, d.as_ref(), pending, &tk, cx).into_any_element());
-        }
-        if let Some(d) = d.as_ref().filter(|d| !d.webhooks.is_empty()) {
-            body.push(webhooks(m, d, &tk, cx).into_any_element());
-        }
-        body.push(self.more(m, busy, &tk, cx).into_any_element());
+        let tabs = (!gone).then(|| self.details_tabs(m, &tk, cx));
+        let tabs_shown = tabs.is_some();
+        if tab == DetailsTab::Activity {
         body.push(
             div()
                 .flex()
@@ -78,6 +103,7 @@ impl Panel {
                 })
                 .into_any_element(),
         );
+        }
 
         let armed_key = format!("details:{key}");
         let armed = self.is_armed(&armed_key);
@@ -117,6 +143,7 @@ impl Panel {
             .min_h_0()
             // The still header has the back button and the title itself.
             .when(self.state.settings.animated_rooftop, |d| d.child(sub_header(&m.name, &tk, cx)))
+            .children(tabs)
             .child(
                 // The picker scrolls this by hand (see `open_picker`), so it has its own handle;
                 // the bar sits on top, outside what scrolls.
@@ -134,7 +161,7 @@ impl Panel {
                             .gap(px(22.))
                             .size_full()
                             .px(px(16.))
-                            .pt(px(4.))
+                            .pt(px(if tabs_shown { 14. } else { 4. }))
                             .pb(px(16.))
                             .overflow_y_scroll()
                             .track_scroll(&self.details_scroll)
@@ -143,6 +170,48 @@ impl Panel {
                     .vertical_scrollbar(&self.details_scroll),
             )
             .child(foot)
+    }
+
+    /// The tabs a machine's details are in, under the header: what it does, its projects, its
+    /// sign-ins, and what reaches it from outside.
+    fn details_tabs(&mut self, m: &MachineView, tk: &Tokens, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let tk = *tk;
+        // A sign-in to do, or one under way: worth a look.
+        let accounts_need_you = !m.signed_out.is_empty() || m.github_code.is_some();
+        let tabs = [
+            (DetailsTab::Activity, "Activity", None, false),
+            (DetailsTab::Projects, "Projects", (!m.projects.is_empty()).then_some(m.projects.len()), false),
+            (DetailsTab::Accounts, "Accounts", None, accounts_need_you),
+            (DetailsTab::Connections, "Connections", None, false),
+        ];
+        div().flex().flex_none().px(px(12.)).border_b_1().border_color(tk.line).children(tabs.into_iter().map(|(tab, label, n, dot)| {
+            let on = self.details_tab == tab;
+            let fg = tk.fg;
+            div()
+                .id(SharedString::from(format!("tab-{label}")))
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(5.))
+                .h(px(34.))
+                .text_size(px(12.5))
+                .border_b_2()
+                .border_color(if on { tk.accent_text } else { gpui_kit::transparent_black().into() })
+                .text_color(if on { tk.fg } else { tk.muted })
+                .when(on, |t| t.font_weight(FontWeight::SEMIBOLD))
+                .when(!on, |t| t.cursor_pointer().hover(move |s| s.text_color(fg)))
+                .child(label)
+                .children(n.map(|n| div().font_family(MONO).text_size(px(10.5)).text_color(tk.muted).child(n.to_string())))
+                .when(dot, |t| t.child(div().size(px(6.)).bg(tk.accent_text)))
+                .when(!on, |t| {
+                    t.on_click(cx.listener(move |this, _, _, cx| {
+                        this.details_tab = tab;
+                        this.details_scroll.set_offset(point(px(0.), px(0.)));
+                        cx.notify();
+                    }))
+                })
+        }))
     }
 
     /// What a user scans for first: is it working, what is it, what does it cost.
@@ -305,6 +374,41 @@ impl Panel {
             .child(power_button)
             .when(on, |r| r.child(self.stay_awake(m, busy, &tk, cx)));
         kit::section("power", None, None, div().flex().flex_col().child(toggle).child(row), &tk)
+    }
+
+    /// Its own monthly spending limit: none, or one of a few amounts.
+    fn spending(&mut self, m: &MachineView, busy: bool, tk: &Tokens, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let tk = *tk;
+        let mut choices = div().flex().h(px(30.)).border_1().border_color(tk.frame);
+        for (i, usd) in MACHINE_LIMITS.iter().enumerate() {
+            let a = model::limit(*usd);
+            let m2 = m.clone();
+            choices = choices.child(segment(("limit", i), i == 0, m.month_limit == *usd, &tk).child(a.label.clone()).when(!busy, |s| {
+                s.on_click(cx.listener(move |this, _, _, cx| this.track(&m2, a.clone(), cx)))
+            }));
+        }
+        let spent = model::money(m.month_spent);
+        let hint = match m.month_limit {
+            Some(l) if !MACHINE_LIMITS.contains(&Some(l)) => format!("Spent {spent} of ${l:.2} this month (set from the command)"),
+            Some(l) => format!("Spent {spent} of ${l:.0} this month · stopped there, and you hear at 80%"),
+            None => format!("Spent {spent} this month · a limit stops it there until you raise it"),
+        };
+        kit::section("monthly limit", None, None, div().flex().flex_col().gap(px(6.)).pt(px(4.)).child(choices).child(kit::hint(hint, &tk)), &tk)
+    }
+
+    /// A throwaway machine: when it's deleted, and "Keep it".
+    fn lifetime(&mut self, m: &MachineView, busy: bool, tk: &Tokens, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let tk = *tk;
+        let left = m.delete_at.unwrap_or_default() - (model::now_ms() / 1000) as i64;
+        let when = if left > 0 { format!("Deleted in {}, or once its agents finish", app::span(left)) } else { "Deleted once its agents finish".into() };
+        let keep = model::keep();
+        let m2 = m.clone();
+        let line = kit::line()
+            .child(div().flex_1().min_w_0().child(when))
+            .child(kit::button("keep-machine", Btn::Outline, Size::Sm, busy, &tk).child(keep.label.clone()).when(!busy, |b| {
+                b.on_click(cx.listener(move |this, _, _, cx| this.track(&m2, keep.clone(), cx)))
+            }));
+        kit::section("throwaway", None, None, line, &tk)
     }
 
     /// Like caffeinate: a one-time "stay up at least this long", which simply runs out.
@@ -497,16 +601,17 @@ impl Panel {
                     .collect();
                 if !items.is_empty() {
                     let how = if t3agent37_lib::app::private_window_available() {
-                        "Other account and Switch account sign in from a private browser window."
+                        "another account signs in from a private window"
                     } else {
-                        "For Other account and Switch account, sign in on the page with the account this machine should use."
+                        "for another account, sign in with it on the page"
                     };
-                    items.push(line_note(&tk).child(format!("Sign-ins are per machine, so each can use its own account. {how}")).into_any_element());
+                    items.push(line_note(&tk).child(format!("Each machine has its own sign-ins; {how}.")).into_any_element());
                 }
                 items
             }
         };
-        kit::section("agents", None, None, kit::lines(items, &tk), &tk)
+        // The Accounts tab is this section.
+        div().flex().flex_col().flex_none().min_w_0().child(kit::lines(items, &tk))
     }
 
     /// The field for a GitHub token limited to some repositories, while it's open for this
@@ -642,7 +747,7 @@ impl Panel {
         let listed = !items.is_empty();
         if !listed {
             let text = if awake {
-                "No servers from its agents or terminals yet. When one starts, it shows here.".to_string()
+                "No servers running. One an agent starts shows here.".to_string()
             } else {
                 format!("Servers {} runs show here while it's awake.", m.name)
             };
@@ -654,7 +759,7 @@ impl Panel {
             items.push(
                 line_note(&tk)
                     .child(format!(
-                        "Opens in your browser at localhost, through T3. Opening a page wakes {}; one left open doesn't keep it awake.",
+                        "At localhost in your browser. A page you open wakes {}.",
                         m.name
                     ))
                     .into_any_element(),
@@ -751,7 +856,7 @@ impl Panel {
                         connect_switch(
                             "approval",
                             "Approve new devices",
-                            "A device that signs in to your T3 account waits until you approve it in T3 Code",
+                            "New devices wait for your OK in T3 Code",
                             approval,
                             busy,
                             m,
@@ -765,7 +870,7 @@ impl Panel {
                         connect_switch(
                             "push",
                             "Push to your phone",
-                            "Agent activity as notifications and Live Activities in the T3 Code phone app, laptop closed or not",
+                            "Agent activity in T3 Code's phone app",
                             push,
                             busy,
                             m,
@@ -784,7 +889,7 @@ impl Panel {
                     items.push(
                         line_note(&tk)
                             .child(format!(
-                                "T3 Connect can't wake {}. Open this link on your phone first, then pick it in T3 Code. The link only wakes it; using it still takes your T3 sign-in.",
+                                "Wakes {} from your phone, which T3 Connect can't.",
                                 m.name
                             ))
                             .child(
@@ -836,8 +941,8 @@ impl Panel {
                         .into_any_element(),
                     line_note(&tk)
                         .child(format!(
-                            "An address that Grok, a phone shortcut or a script can call to start threads in {}'s projects, check on them and follow up. A request wakes {}. Whoever has the URL acts as you.",
-                            m.name, m.name
+                            "Lets Grok, a shortcut or a script start threads on {}. Whoever has it acts as you.",
+                            m.name
                         ))
                         .into_any_element(),
                 ]
@@ -875,16 +980,69 @@ impl Panel {
                 .into_iter()
                 .chain(split.map(IntoElement::into_any_element))
                 .chain([line_note(&tk)
-                        .child(format!(
-                            "GET it for {}'s projects; POST it {{\"project\", \"prompt\"}} to start a thread, with a project's own model or {model}. Its answer has a URL for the thread's status, reply and follow-ups. To keep the token out of the address, send it as \"Authorization: Bearer <token>\" to the address instead. Whoever has the token acts as you.",
-                            m.name
-                        ))
+                        .child(format!("New threads use a project's own model, else {model}. Whoever has it acts as you."))
                         .child(div().flex().gap(px(12.)).child(small_link("start-replace", model::start_replace(), cx)).child(small_link("start-off", model::start_off(), cx)))
                         .into_any_element()])
                 .collect()
             }
         };
         kit::section("start url", None, None, kit::lines(items, &tk), &tk)
+    }
+
+    /// Which of the user's other machines its agents may use, and how far: T3's linked
+    /// environments, one choice per machine. None when there's no other machine.
+    fn other_machines(&mut self, m: &MachineView, pending: Option<&'static str>, tk: &Tokens, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+        let tk = *tk;
+        let others: Vec<MachineView> = self.state.machines.iter().filter(|o| !o.id.is_empty() && o.id != m.id && o.state != State::Missing).cloned().collect();
+        if others.is_empty() || m.state == State::Missing {
+            return None;
+        }
+        let t = self.t();
+        let busy = pending.is_some();
+        let linking = pending.filter(|p| *p == "Linking…" || *p == "Unlinking…");
+        let mut items: Vec<AnyElement> = Vec::new();
+        for o in &others {
+            let current = m.links.iter().find(|l| l.machine_id == o.id).and_then(|l| Access::parse(&l.access));
+            let mut seg = div().flex().flex_none().w(px(222.)).border_1().border_color(tk.frame).when(busy, |s| s.opacity(0.6));
+            let choices: Vec<Option<Access>> = std::iter::once(None).chain(Access::ALL.into_iter().map(Some)).collect();
+            for (i, choice) in choices.into_iter().enumerate() {
+                let on = choice == current;
+                let action = model::link(o, choice);
+                let m2 = m.clone();
+                seg = seg.child(
+                    segment((SharedString::from(format!("link-{}", o.id)), i), i == 0, on, &tk)
+                        .h(px(24.))
+                        .text_size(px(10.5))
+                        .child(action.label.clone())
+                        .when(!on && !busy, |s| s.on_click(cx.listener(move |this, _, _, cx| this.track(&m2, action.clone(), cx)))),
+                );
+            }
+            let used_back = m.used_by.iter().find(|l| l.machine_id == o.id).and_then(|l| Access::parse(&l.access));
+            items.push(
+                kit::line()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(o.name.clone())
+                            .when_some(used_back, |d, a| d.child(kit::hint(format!("uses {}: {}", m.name, a.short()), &tk))),
+                    )
+                    .child(seg)
+                    .into_any_element(),
+            );
+        }
+        if let Some(label) = linking {
+            items.push(line_note(&tk).child(div().flex().items_center().gap(px(6.)).child(kit::dots(t, tk.accent_text)).child(label)).into_any_element());
+        }
+        items.push(
+            line_note(&tk)
+                .child(format!("What {}'s agents may do there: read its threads, or start ones that ask first, edit, run in auto mode or run anything.", m.name))
+                .into_any_element(),
+        );
+        Some(kit::section("other machines", None, None, kit::lines(items, &tk), &tk))
     }
 
     /// Its T3 projects, each GitHub one with its issues switch and settings, and adding one the
@@ -897,6 +1055,7 @@ impl Panel {
         let want = self.issues_want.clone();
         let choices = self.details.as_ref().filter(|d| d.id == m.id).map(|d| d.issue_models.clone()).unwrap_or_default();
         let costs = self.details.as_ref().filter(|d| d.id == m.id).map(|d| d.project_costs.clone()).unwrap_or_default();
+        let env = self.details.as_ref().filter(|d| d.id == m.id).map(|d| d.env.clone()).unwrap_or_default();
         let on_github = |p: &MachineProject| p.status.is_none() && p.repo_key.as_deref().and_then(issues::github_repo).is_some();
         let mut items: Vec<AnyElement> = Vec::new();
         for (i, p) in m.projects.iter().enumerate() {
@@ -924,7 +1083,8 @@ impl Panel {
                 (_, Some(settings)) if on => Some(issues_summary(i, p, settings, &choices, busy, m, &tk, cx).into_any_element()),
                 _ => None,
             };
-            items.push(div().flex().flex_col().child(line).children(below).into_any_element());
+            let env = env.iter().find(|e| e.project_id == p.id).filter(|_| p.status.is_none()).map(|e| env_line(i, p, e, busy, m, &tk, cx).into_any_element());
+            items.push(div().flex().flex_col().child(line).children(env).children(below).into_any_element());
         }
         if m.projects.is_empty() && !gone {
             items.push(kit::line().child(div().flex_1().text_color(tk.muted).child("Cloned from its git remote, .env files included")).into_any_element());
@@ -935,9 +1095,9 @@ impl Panel {
         }
         if m.projects.iter().any(on_github) {
             let note = if m.projects.iter().any(|p| p.issues.is_some()) {
-                format!("An issue given its project's label becomes a thread on {} that opens a pull request, and reviews, comments starting /agent and failed CI there go back to it. Only people who can push count.", m.name)
+                format!("Label an issue and {} opens a pull request for it, then takes its reviews, /agent comments and failed CI.", m.name)
             } else {
-                format!("Issues: label a GitHub issue and {} works on it and opens a pull request, waking up for it.", m.name)
+                format!("Turn on issues and {} works on the GitHub issues you label, opening pull requests.", m.name)
             };
             items.push(line_note(&tk).child(note).into_any_element());
         }
@@ -967,7 +1127,12 @@ impl Panel {
             let picker = open.then(|| self.render_picker(m, &tk, window, cx));
             items.push(div().flex().flex_col().child(add).children(picker).into_any_element());
         }
-        kit::section("projects", Some(m.projects.len()), None, kit::lines(items, &tk), &tk)
+        // Its own tab says "Projects" already; a machine that's gone shows them under its activity.
+        if gone {
+            kit::section("projects", Some(m.projects.len()), None, kit::lines(items, &tk), &tk)
+        } else {
+            div().flex().flex_col().flex_none().min_w_0().child(kit::lines(items, &tk))
+        }
     }
 
     /// The rare stuff: size and delete, folded away.
@@ -1080,7 +1245,7 @@ fn webhooks(m: &MachineView, d: &Details, tk: &Tokens, cx: &mut Context<Panel>) 
     items.push(
         line_note(tk)
             .child(format!(
-                "T3 Code's scheduled tasks with a webhook. Deliveries to these URLs wake {} first, so they don't wait for it; T3 checks the token, signature and filters as usual. Anyone with a URL can send it deliveries.",
+                "Wake {} for T3's webhook tasks. Anyone with a URL can send it deliveries.",
                 m.name
             ))
             .into_any_element(),
@@ -1462,6 +1627,56 @@ fn start_sign_in(m: &MachineView, name: &str, action: Action, cx: &mut Context<P
 }
 
 /// A sentence about the line above it: wraps instead of cutting off.
+/// Why the machine is stopped, at the top of its activity.
+fn paused_banner(why: &str, tk: &Tokens) -> impl IntoElement + use<> {
+    let mut text: String = why.to_owned();
+    if let Some(first) = text.get(..1) {
+        text = first.to_uppercase() + &text[1..];
+    }
+    div()
+        .flex()
+        .gap(px(9.))
+        .px(px(12.))
+        .py(px(10.))
+        .border_1()
+        .border_color(tk.danger)
+        .text_size(px(12.5))
+        .line_height(relative(1.4))
+        .child(div().flex_none().mt(px(2.)).child(kit::icon(Icon::Alert, 12., tk.danger)))
+        .child(div().flex_1().min_w_0().child(format!("{text}.")))
+}
+
+/// A project's env files from this computer, by name: "env · .env, apps/web/.env · 14 variables",
+/// with "Copy again" and "Remove".
+#[allow(clippy::too_many_arguments)]
+fn env_line(i: usize, p: &MachineProject, e: &t3agent37_lib::store::ProjectEnv, busy: bool, m: &MachineView, tk: &Tokens, cx: &mut Context<Panel>) -> impl IntoElement + use<> {
+    let variables: usize = e.files.iter().map(|f| f.names.len()).sum();
+    let paths: Vec<&str> = e.files.iter().map(|f| f.path.as_str()).collect();
+    let names: Vec<&str> = e.files.iter().flat_map(|f| f.names.iter().map(String::as_str)).take(6).collect();
+    let more = variables.saturating_sub(names.len());
+    let (copy, remove) = (model::env_copy(&p.id), model::env_remove(&p.id));
+    let (m2, m3) = (m.clone(), m.clone());
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .pb(px(8.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(kit::caption(tk).flex_1().min_w_0().truncate().child(format!("env · {} · {variables} variable{}", paths.join(", "), if variables == 1 { "" } else { "s" })))
+                .child(kit::link(("env-copy", i), copy.label.clone(), busy, tk).px_0().text_size(px(11.5)).when(!busy, |l| {
+                    l.on_click(cx.listener(move |this, _, _, cx| this.track(&m2, copy.clone(), cx)))
+                }))
+                .child(kit::link(("env-remove", i), remove.label.clone(), busy, tk).px_0().text_size(px(11.5)).when(!busy, |l| {
+                    l.on_click(cx.listener(move |this, _, _, cx| this.track(&m3, remove.clone(), cx)))
+                })),
+        )
+        .child(kit::caption(tk).truncate().child(if more > 0 { format!("{} +{more}", names.join(", ")) } else { names.join(", ") }))
+}
+
 fn line_note(tk: &Tokens) -> Div {
     div().w_full().py(px(7.)).text_size(px(12.)).line_height(relative(1.4)).text_color(tk.muted).flex().flex_col().items_start()
 }

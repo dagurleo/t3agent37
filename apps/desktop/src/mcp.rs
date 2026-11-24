@@ -78,6 +78,42 @@ enum Call {
         size: Option<String>,
         #[serde(default)]
         projects: Vec<String>,
+        #[serde(rename = "deleteAfterMinutes")]
+        delete_after_minutes: Option<u64>,
+    },
+    CopyMachine {
+        machine: String,
+        name: String,
+        size: Option<String>,
+        #[serde(rename = "deleteAfterMinutes")]
+        delete_after_minutes: Option<u64>,
+    },
+    /// A time to go for a machine; none (or 0) keeps it.
+    DeleteAfter {
+        machine: String,
+        minutes: Option<u64>,
+    },
+    ProjectEnv {
+        machine: String,
+        project: String,
+        action: Option<crate::app::EnvAction>,
+    },
+    /// Spending limits are the user's to set, in the command or the panel: refused over MCP, so
+    /// an agent can't raise the one that stops it.
+    SpendingLimit {
+        machine: Option<String>,
+        dollars: Option<f64>,
+    },
+    /// Takes minutes, past what MCP clients wait for: the command's alone.
+    Bench {
+        machine: String,
+        sizes: Vec<String>,
+        project: Option<String>,
+        command: String,
+        #[serde(default)]
+        keep: bool,
+        #[serde(rename = "timeoutMinutes")]
+        timeout_minutes: Option<u32>,
     },
     ListProjects {},
     AddProject { machine: String, project: String },
@@ -92,6 +128,18 @@ enum Call {
         another_account: bool,
     },
     CancelSignIn { machine: String },
+    /// Which machines may use each other: the user's to say, in the command or the panel. Not
+    /// in the tool list, and refused over MCP, so an agent can't let itself into another
+    /// machine.
+    LinkMachines {
+        from: String,
+        to: String,
+        access: String,
+    },
+    UnlinkMachines {
+        from: String,
+        to: String,
+    },
     TurnOnConnect { machine: String },
     WakeLink {
         machine: String,
@@ -186,6 +234,18 @@ async fn dispatch<T: Tools>(tools: Arc<T>, request: Value) -> Option<Value> {
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tool_list() })),
         "tools/call" => match parse_call(params) {
+            Ok(Call::LinkMachines { .. } | Call::UnlinkMachines { .. }) => Ok(content(
+                "Only the user decides which machines may use each other: `t3agent37 link`, or the machine's details in t3agent37's panel.".into(),
+                true,
+            )),
+            Ok(Call::SpendingLimit { .. }) => Ok(content(
+                "Only the user sets spending limits: `t3agent37 limit`, Settings, or the machine's details in t3agent37's panel.".into(),
+                true,
+            )),
+            Ok(Call::Bench { .. }) => Ok(content(
+                "Benchmarks on copies take minutes: ask the user to run `t3agent37 bench` in a terminal, or use copy_machine and delete_machine.".into(),
+                true,
+            )),
             Ok(call) => Ok(match tools.call(call).await {
                 Ok(text) => content(text, false),
                 Err(e) => content(format!("{e:#}"), true),
@@ -250,7 +310,15 @@ fn tool_list() -> Value {
              and agent of those whose GitHub issues it works on), plus Agent37 \
              costs today and this month (UTC) and the wallet balance left. `elsewhere` lists \
              t3agent37 machines on the same Agent37 account that this computer doesn't have \
-             (made with t3agent37 on another computer): add_machine_here adds one.",
+             (made with t3agent37 on another computer): add_machine_here adds one. Each machine's \
+             `links` are the user's other machines its agents may use, with T3's access level (read-only \
+             up to full-access), and `usedBy` the machines that may use it: an agent on a machine works on \
+             one it links to with T3's own tools (t3_environment_links, then delegate_task with that \
+             environmentId). Only the user changes these. A machine's monthLimit is its own \
+             spending limit in dollars a UTC month and monthSpent what it spent; `paused` says why one \
+             is stopped at a limit (nothing wakes it until the user raises it); `limit` is the one on \
+             all machines together. deleteAt (unix seconds) is when a throwaway machine is deleted, \
+             and copiedFrom the machine it's a copy of.",
             json!({}),
             &[],
         ),
@@ -273,8 +341,47 @@ fn tool_list() -> Value {
                 "name": { "type": "string", "description": "Unique machine name" },
                 "size": size("Defaults to default"),
                 "projects": { "type": "array", "items": { "type": "string" }, "description": "Project ids from list_projects" },
+                "deleteAfterMinutes": { "type": "integer", "minimum": 1, "description": "A throwaway machine: deleted this long after it's made (or once its agents finish)" },
             }),
             &["name"],
+        ),
+        tool(
+            "copy_machine",
+            "Makes a new machine that's a copy of another as its disk is now: its projects and their \
+             files, work not pushed anywhere, its agents' and GitHub's sign-ins, whatever was \
+             installed there; at the same size or another. It gets a T3 identity of its own \
+             (threads come along; T3 Connect, GitHub issues, the start URL and links to other \
+             machines don't). Takes a few minutes; the machine it's copied from isn't touched. Then \
+             T3 Code asks the user to add it as a backend. deleteAfterMinutes makes it a throwaway \
+             one, deleted then (or once its agents finish). The user pays for both while awake.",
+            json!({
+                "machine": machine,
+                "name": { "type": "string", "description": "The copy's name: unique, lowercase letters, digits and dashes" },
+                "size": size("Defaults to the machine's own"),
+                "deleteAfterMinutes": { "type": "integer", "minimum": 1, "description": "Delete it this long after it's made" },
+            }),
+            &["machine", "name"],
+        ),
+        tool(
+            "delete_after",
+            "Gives a machine a time to go: it's deleted `minutes` from now, with everything on it, or \
+             once its agents finish if they still work then (never under running work). The user \
+             hears about it 10 minutes before. minutes 0 or none keeps it. Ask the user first.",
+            json!({ "machine": machine, "minutes": { "type": "integer", "minimum": 0 } }),
+            &["machine"],
+        ),
+        tool(
+            "project_env",
+            "A project's env files on a machine (.env, .env.local, .dev.vars and the like), which come \
+             from the user's copy of the project on this computer: list (default) says which files and \
+             which variables they set, names only, never waking it; copy copies this computer's over \
+             them again (after the user changed a key, say), waking it; remove deletes those files there.",
+            json!({
+                "machine": machine,
+                "project": { "type": "string", "description": "A project on the machine: title or id" },
+                "action": { "type": "string", "enum": ["list", "copy", "remove"] },
+            }),
+            &["machine", "project"],
         ),
         tool(
             "list_projects",
@@ -495,6 +602,10 @@ impl Call {
                 "Creating {name}, about a minute. list_machines shows its progress. When it is ready, \
                  T3 Code asks the user to add it as a backend."
             ),
+            Self::CopyMachine { machine, name, .. } => format!(
+                "Copying {machine} to {name}, a few minutes. list_machines shows its progress. When it is \
+                 ready, T3 Code asks the user to add it as a backend."
+            ),
             Self::SignInAgent { machine, agent, .. } => format!(
                 "The {agent} sign-in for {machine} is open in the browser; the user must click Authorize. \
                  Once done, list_machines stops listing {agent} under signedOut, and machine_details shows \
@@ -543,7 +654,29 @@ impl Tools for App {
 
 async fn run(app: &Arc<App>, call: Call) -> Result<String> {
     Ok(match call {
-        Call::ListMachines {} => json!({ "machines": app.views(), "elsewhere": app.elsewhere(), "costs": app.costs() }).to_string(),
+        Call::ListMachines {} => json!({
+            "machines": app.views(),
+            "elsewhere": app.elsewhere(),
+            "costs": app.costs(),
+            "limit": { "monthUsd": app.settings().month_limit_usd, "spent": app.total_month_spend() },
+        })
+        .to_string(),
+        Call::CopyMachine { machine, name, size, delete_after_minutes } => {
+            let m = app.copy_machine(&machine, &name, size.as_deref(), delete_after_minutes.filter(|m| *m > 0).map(|m| m * 60), true).await?;
+            let r = m.record();
+            let mut text = format!("Made {} ({}), a copy of {machine} at size {}.", r.name, r.id, r.size);
+            if let Some(at) = r.upkeep.delete_at {
+                text.push_str(&format!(" It's deleted in {}.", crate::app::span(at - chrono::Utc::now().timestamp())));
+            }
+            text.push_str(" T3 Code now asks the user to add it as a backend; tell them to confirm.");
+            text
+        }
+        Call::DeleteAfter { machine, minutes } => app.set_delete_after(&machine, minutes.filter(|m| *m > 0).map(|m| m * 60))?,
+        Call::ProjectEnv { machine, project, action } => app.project_env(&machine, &project, action.unwrap_or(crate::app::EnvAction::List)).await?,
+        Call::SpendingLimit { machine, dollars } => app.set_limit(machine.as_deref(), dollars).await?,
+        Call::Bench { machine, sizes, project, command, keep, timeout_minutes } => {
+            app.bench(&machine, &sizes, project.as_deref(), &command, keep, timeout_minutes.unwrap_or(60)).await?
+        }
         Call::AddMachineHere { machine } => {
             let m = app.add_machine_here(&machine).await?;
             format!(
@@ -551,8 +684,8 @@ async fn run(app: &Arc<App>, call: Call) -> Result<String> {
                 m.record().name
             )
         }
-        Call::CreateMachine { name, size, projects } => {
-            let m = app.create_machine(&name, size.as_deref().unwrap_or("default"), projects).await?;
+        Call::CreateMachine { name, size, projects, delete_after_minutes } => {
+            let m = app.create_machine(&name, size.as_deref().unwrap_or("default"), projects, delete_after_minutes.filter(|m| *m > 0).map(|m| m * 60)).await?;
             format!(
                 "Created {} ({}). T3 Code now asks the user to add it as a backend; tell them to confirm.",
                 m.record().name,
@@ -606,6 +739,12 @@ async fn run(app: &Arc<App>, call: Call) -> Result<String> {
                 None => format!("{agent} is signed in on {}.", m.record().name),
             }
         }
+        Call::LinkMachines { from, to, access } => {
+            let level = crate::machine::peers::Access::parse(&access)
+                .ok_or_else(|| anyhow!("no access {access}: read, ask, edits, auto or full"))?;
+            app.set_link(&from, &to, Some(level)).await?
+        }
+        Call::UnlinkMachines { from, to } => app.set_link(&from, &to, None).await?,
         Call::CancelSignIn { machine } => {
             let m = app.machine(&machine)?;
             let name = m.record().name;
@@ -833,8 +972,9 @@ mod tests {
     async fn lists_tools_and_rejects_unknown_methods() {
         let tools = rpc("tools/list", json!({})).await["result"]["tools"].clone();
         let names: Vec<&str> = tools.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names.len(), 21);
+        assert_eq!(names.len(), 24);
         assert!(names.contains(&"sign_in_agent") && names.contains(&"delete_machine") && names.contains(&"wake_link"));
+        assert!(names.contains(&"copy_machine") && names.contains(&"project_env") && !names.contains(&"spending_limit"));
         assert_eq!(rpc("ping", json!({})).await["result"], json!({}));
         assert_eq!(rpc("resources/list", json!({})).await["error"]["code"], -32601);
     }
@@ -844,11 +984,31 @@ mod tests {
         let r = rpc("tools/call", json!({ "name": "list_machines" })).await;
         assert_eq!(r["result"], content("ListMachines".into(), false));
         let r = rpc("tools/call", json!({ "name": "create_machine", "arguments": { "name": "dev" } })).await;
-        assert_eq!(r["result"]["content"][0]["text"], r#"CreateMachine { name: "dev", size: None, projects: [] }"#);
+        assert_eq!(r["result"]["content"][0]["text"], r#"CreateMachine { name: "dev", size: None, projects: [], delete_after_minutes: None }"#);
         let r = rpc("tools/call", json!({ "name": "sleep_machine", "arguments": { "machine": "dev" } })).await;
         assert_eq!(r["result"], content("an agent is working".into(), true));
         let r = rpc("tools/call", json!({ "name": "resize_machine", "arguments": { "machine": "dev", "size": "galactic" } })).await;
         assert_eq!(r["result"], content("unknown size galactic".into(), true));
+        // Which machines may use each other is the user's to say: an agent is turned away.
+        for call in [
+            json!({ "name": "link_machines", "arguments": { "from": "dev", "to": "prod", "access": "full" } }),
+            json!({ "name": "unlink_machines", "arguments": { "from": "dev", "to": "prod" } }),
+        ] {
+            let r = rpc("tools/call", call).await;
+            assert_eq!(r["result"]["isError"], true);
+            assert!(r["result"]["content"][0]["text"].as_str().unwrap().starts_with("Only the user"));
+        }
+        // So are spending limits, and an agent can't raise the one that stops it.
+        for call in [
+            json!({ "name": "spending_limit", "arguments": { "machine": "dev", "dollars": 500 } }),
+            json!({ "name": "spending_limit", "arguments": {} }),
+        ] {
+            let r = rpc("tools/call", call).await;
+            assert_eq!(r["result"]["isError"], true);
+            assert!(r["result"]["content"][0]["text"].as_str().unwrap().starts_with("Only the user sets spending limits"));
+        }
+        let r = rpc("tools/call", json!({ "name": "bench", "arguments": { "machine": "dev", "sizes": ["small"], "command": "true" } })).await;
+        assert_eq!(r["result"]["isError"], true);
         for bad in [
             json!({ "name": "format_disk", "arguments": { "machine": "dev" } }),
             json!({ "name": "wake_machine", "arguments": {} }),
@@ -920,6 +1080,12 @@ mod tests {
         assert_eq!(r["text"], "ListMachines");
         let (_, r) = call(&[], json!({ "name": "sleep_machine", "arguments": { "machine": "dev" } })).await;
         assert_eq!(r, json!({ "ok": false, "error": "an agent is working" }));
+        // The command may change links, as the user's.
+        let (_, r) = call(&[], json!({ "name": "unlink_machines", "arguments": { "from": "dev", "to": "prod" } })).await;
+        assert_eq!(r["text"], r#"UnlinkMachines { from: "dev", to: "prod" }"#);
+        // And set spending limits.
+        let (_, r) = call(&[], json!({ "name": "spending_limit", "arguments": { "dollars": 25 } })).await;
+        assert_eq!(r["text"], "SpendingLimit { machine: None, dollars: Some(25.0) }");
         let (status, r) = call(&[], json!({ "name": "format_disk" })).await;
         assert_eq!((status, r["ok"].clone()), (StatusCode::BAD_REQUEST, json!(false)));
         let (status, _) = call(&[("origin", "https://evil.example")], json!({ "name": "list_machines" })).await;

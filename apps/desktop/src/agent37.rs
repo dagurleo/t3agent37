@@ -360,6 +360,33 @@ impl Agent37 {
         self.call(reqwest::Method::POST, &format!("/instances/{id}/sleep"), None, Duration::from_secs(300)).await.map(drop)
     }
 
+    /// Stops the machine, running or asleep: its processes end, its disk stays, and unlike a
+    /// sleeping one nothing but a start brings it back (a request to its URLs doesn't). Bills
+    /// disk only. Agent37 refuses one asleep in cold storage, which has to be started first.
+    pub async fn stop(&self, id: &str) -> Result<()> {
+        self.call(reqwest::Method::POST, &format!("/instances/{id}/stop"), None, Duration::from_secs(300)).await.map(drop)
+    }
+
+    /// A new instance with a copy of `id`'s disk as it is now, which boots fresh from it (its
+    /// processes don't come along), with a shape of its own. Public ports aren't copied. The
+    /// source may be running, asleep or stopped and isn't touched. Not retried, as `create`.
+    pub async fn fork(&self, id: &str, name: &str, size: &crate::machine::provision::SizeInfo) -> Result<Instance> {
+        let body = json!({
+            "name": name,
+            "resources": { "cpu": size.cpu, "memory": size.memory, "disk": crate::machine::provision::DISK_GB },
+            "metadata": { "app": "t3agent37" },
+            "auto_sleep": true,
+            "idle_timeout_seconds": crate::machine::provision::IDLE_TIMEOUT_SECS,
+        });
+        match self.send(reqwest::Method::POST, &format!("/instances/{id}/fork"), Some(&body), Duration::from_secs(300)).await {
+            Ok(v) => Ok(serde_json::from_value(v)?),
+            Err(e) => {
+                self.delete_strays(name).await;
+                Err(e)
+            }
+        }
+    }
+
     /// Only on a running machine; a VM cold-boots onto its new shape.
     pub async fn resize(&self, id: &str, cpu: u32, memory: u32) -> Result<()> {
         let body = json!({ "cpu": cpu, "memory": memory });

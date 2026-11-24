@@ -87,6 +87,13 @@ pub struct MachineSettings {
     #[serde(default)]
     pub repos: Vec<RepoSettings>,
     pub start_token: Option<String>,
+    /// Whether it takes links from the user's other machines (`peers.json`).
+    #[serde(default)]
+    pub accept_links: bool,
+    /// T3's links from it, from its database; `None` when they couldn't be read (T3 not set up
+    /// yet, or a T3 without links), which leaves the record's as they are.
+    #[serde(default)]
+    pub links: Option<Vec<crate::store::PeerLink>>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -103,14 +110,21 @@ pub struct RepoSettings {
     pub options: Option<Vec<String>>,
 }
 
-const SETTINGS_SCRIPT: &str = r#"node -e '
+const SETTINGS_SCRIPT: &str = r#"node --no-warnings -e '
   const fs = require("fs"), d = process.env.HOME + "/.t3agent37";
   const read = (f) => { try { return JSON.parse(fs.readFileSync(d + "/" + f, "utf8")); } catch { return null; } };
   const repos = Object.entries(read("issues.json")?.repos ?? {}).map(([repo, w]) => ({
     repo, projectId: w.projectId, hookId: w.hookId ?? null, label: w.label ?? null,
     provider: w.provider ?? null, model: w.model ?? null, options: w.options ?? null,
   }));
-  console.log(JSON.stringify({ repos, startToken: read("start.json")?.token ?? null }));
+  let links = null;
+  try {
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(process.env.HOME + "/.t3/userdata/statev2.sqlite", { readOnly: true });
+    links = db.prepare("SELECT environment_id AS environmentId, access, linked_at AS linkedAt, expires_at AS expiresAt, last_error AS lastError FROM peer_environment_links").all();
+    db.close();
+  } catch {}
+  console.log(JSON.stringify({ repos, startToken: read("start.json")?.token ?? null, acceptLinks: read("peers.json")?.accept === true, links }));
 '"#;
 
 /// The record with the machine's own settings: what it does is what the app shows.
@@ -136,6 +150,10 @@ pub fn apply(record: &mut Machine, settings: MachineSettings) {
         .collect();
     let sent = |token: &str| record.start.as_ref().filter(|s| s.token == token).map_or(0, |s| s.sent);
     record.start = settings.start_token.map(|token| StartLink { sent: sent(&token), token });
+    record.accepts_links = settings.accept_links;
+    if let Some(links) = settings.links {
+        record.links = links;
+    }
 }
 
 /// A record for a machine made on another computer, as it's added here.
@@ -173,6 +191,9 @@ pub fn record(instance: &Instance, name: &str, adopted: Adopted, heartbeat_url: 
         inbox_url: instance.public_ports.iter().find(|p| p.port == provision::INBOX_PORT).map(|p| p.url.clone()),
         hooks: Vec::new(),
         start: None,
+        links: Vec::new(),
+        accepts_links: false,
+        upkeep: Default::default(),
     }
 }
 
@@ -199,11 +220,13 @@ impl MachineRuntime {
         let before = self.record();
         let mut after = before.clone();
         apply(&mut after, settings);
-        let needs_inbox = !after.issues.is_empty() || after.start.is_some();
-        if after.issues != before.issues || after.start != before.start {
+        let needs_inbox = !after.issues.is_empty() || after.start.is_some() || after.accepts_links;
+        if after.issues != before.issues || after.start != before.start || after.links != before.links || after.accepts_links != before.accepts_links {
             self.update_record(|r| {
                 r.issues = after.issues.clone();
                 r.start = after.start.clone();
+                r.links = after.links.clone();
+                r.accepts_links = after.accepts_links;
             });
             self.shared.changed();
         }
@@ -278,7 +301,7 @@ mod tests {
         assert_eq!(r.issues[1].settings, IssueSettings::default());
         // The same token keeps what was sent with it; another starts over; none is off.
         assert_eq!(r.start, Some(StartLink { token: "old".into(), sent: 7 }));
-        apply(&mut r, MachineSettings { repos: Vec::new(), start_token: Some("new".into()) });
+        apply(&mut r, MachineSettings { repos: Vec::new(), start_token: Some("new".into()), ..Default::default() });
         assert_eq!((r.start.as_ref().unwrap().sent, r.issues.len()), (0, 0));
         apply(&mut r, MachineSettings::default());
         assert_eq!(r.start, None);

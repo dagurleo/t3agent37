@@ -45,8 +45,25 @@ impl Panel {
         });
         // 4 vCPU · 8 GB: room for builds and tests without the large price.
         let size = if self.state.sizes.iter().any(|s| s.id == "default") { "default" } else { self.state.sizes.first().map_or("", |s| s.id) };
-        self.new_form = Some(NewForm { name, size: size.into(), picked: Vec::new(), _sub: sub });
+        self.new_form = Some(NewForm { name, size: size.into(), picked: Vec::new(), copy_of: None, delete_after: None, _sub: sub });
         self.load_projects(cx);
+    }
+
+    /// The new machine form as a copy of `m`: its size, and a name after it.
+    pub(super) fn open_copy_form(&mut self, m: &MachineView, window: &mut Window, cx: &mut Context<Self>) {
+        self.go(View::New, window, cx);
+        let taken: Vec<&str> = self.state.machines.iter().map(|m| m.name.as_str()).collect();
+        let base: String = m.name.chars().take(27).collect();
+        let name = (1..).map(|i| if i == 1 { format!("{base}-copy") } else { format!("{base}-copy{i}") }).find(|n| !taken.contains(&n.as_str())).unwrap_or_default();
+        if let Some(form) = &mut self.new_form {
+            form.copy_of = Some((m.id.clone(), m.name.clone()));
+            form.size = m.size.clone();
+            form.name.update(cx, |s, cx| {
+                s.set_value(name, window, cx);
+                s.select_all(window, cx);
+            });
+        }
+        cx.notify();
     }
 
     /// What's wrong with the name, if anything.
@@ -68,7 +85,10 @@ impl Panel {
         if self.name_problem(&name).is_some() || form.size.is_empty() {
             return;
         }
-        let job = self.backend.create_machine(name, form.size.clone(), form.picked.clone());
+        let job = match &form.copy_of {
+            Some((id, _)) => futures::future::Either::Left(self.backend.copy_machine(id.clone(), name, form.size.clone(), form.delete_after)),
+            None => futures::future::Either::Right(self.backend.create_machine(name, form.size.clone(), form.picked.clone(), form.delete_after)),
+        };
         self.go(View::List, window, cx);
         cx.spawn(async move |this, cx| {
             if let Err(e) = job.await {
@@ -82,6 +102,7 @@ impl Panel {
         let tk = *tk;
         let Some(form) = &self.new_form else { return div().into_any_element() };
         let (input, size, picked) = (form.name.clone(), form.size.clone(), form.picked.clone());
+        let (copy_of, delete_after) = (form.copy_of.clone(), form.delete_after);
         let name = value(&input, cx);
         let problem = self.name_problem(&name);
         let focused = input.focus_handle(cx).is_focused(window);
@@ -152,10 +173,37 @@ impl Panel {
                 (p.clone(), opt)
             })
             .collect();
-        let projects = self.project_list("new-projects", options, "", &tk, cx);
-        let projects_field = field("projects", &tk)
-            .child(div().border_1().border_color(tk.frame).bg(tk.bg).child(div().max_h(px(150.)).child(projects).overflow_y_scrollbar().id("new-projects-scroll")))
-            .child(kit::hint("Optional · cloned from git once it's up, .env files included", &tk));
+        let projects_field = match &copy_of {
+            Some((_, from)) => field("what comes along", &tk).child(kit::hint(
+                format!("{from}'s disk as it is now: its projects and their files, work not pushed, its sign-ins and tools. Its threads too. Not T3 Connect, GitHub issues, the start URL or links to other machines."),
+                &tk,
+            )),
+            None => {
+                let projects = self.project_list("new-projects", options, "", &tk, cx);
+                field("projects", &tk)
+                    .child(div().border_1().border_color(tk.frame).bg(tk.bg).child(div().max_h(px(150.)).child(projects).overflow_y_scrollbar().id("new-projects-scroll")))
+                    .child(kit::hint("Optional · cloned from git once it's up, .env files included", &tk))
+            }
+        };
+        let mut times = div().flex().h(px(30.)).border_1().border_color(tk.frame);
+        for (i, (secs, label)) in model::DELETE_AFTER.iter().enumerate() {
+            let secs = *secs;
+            times = times.child(super::details::segment(SharedString::from(format!("delete-after-{i}")), i == 0, delete_after == secs, &tk).child(*label).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    if let Some(f) = &mut this.new_form {
+                        f.delete_after = secs;
+                    }
+                    cx.notify();
+                },
+            )));
+        }
+        let lifetime_field = field("delete it after", &tk).child(times).child(kit::hint(
+            match delete_after {
+                Some(_) => "A throwaway machine: deleted then, with everything on it, or once its agents finish",
+                None => "Kept until you delete it",
+            },
+            &tk,
+        ));
 
         let n = picked.len();
         let then = if n > 0 { format!(", then {n} {}", if n == 1 { "project" } else { "projects" }) } else { String::new() };
@@ -179,6 +227,7 @@ impl Panel {
                     .child(name_field)
                     .child(size_field)
                     .child(projects_field)
+                    .child(lifetime_field)
                     .overflow_y_scrollbar()
                     .id("new-body"),
             )
@@ -193,7 +242,7 @@ impl Panel {
                     .pb(px(14.))
                     .child(
                         kit::button("launch", Btn::Solid, Size::Lg, disabled, &tk)
-                            .child("Launch machine")
+                            .child(if copy_of.is_some() { "Make the copy" } else { "Launch machine" })
                             .when(!disabled, |b| b.on_click(cx.listener(|this, _, window, cx| this.launch(window, cx)))),
                     )
                     .child(
@@ -203,7 +252,11 @@ impl Panel {
                             .font_family(MONO)
                             .text_size(px(10.5))
                             .text_color(tk.muted)
-                            .child(format!("Takes about a minute{then}. T3 Code will ask to add it.")),
+                            .child(if copy_of.is_some() {
+                                "Takes a few minutes. T3 Code will ask to add it.".to_owned()
+                            } else {
+                                format!("Takes about a minute{then}. T3 Code will ask to add it.")
+                            }),
                     ),
             )
             .into_any_element()

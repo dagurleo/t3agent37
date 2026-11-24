@@ -104,6 +104,55 @@ export function summarizeThreads(threads, now = Date.now()) {
   return { working, recent };
 }
 
+/** A thread step's statuses while it's under way. */
+const STEP_LIVE = new Set(["pending", "starting", "running", "waiting"]);
+
+/**
+ * What a working thread is running and what its agent last said, from its latest steps in T3's
+ * database (`orchestration_v2_projection_turn_items`, newest first: type, status, and the
+ * payload's title, toolName, input and text) and its latest message there. The shell snapshot
+ * T3 serves leaves both out.
+ */
+export function describeSteps(steps, lastMessage) {
+  let doing = null;
+  for (const s of steps) {
+    if (!STEP_LIVE.has(s.status)) continue;
+    if (s.type === "assistant_message" || s.type === "user_message" || s.type === "checkpoint") continue;
+    if (s.type === "reasoning") {
+      doing ??= "thinking";
+      continue;
+    }
+    if (s.type === "command_execution" && s.input && !s.title) doing = `running ${clip(s.input, 100)}`;
+    else doing = clip(s.title || s.toolName || String(s.type).replace(/_/g, " "), 100);
+    break;
+  }
+  const said = lastMessage ? clip(lastMessage, 200) : null;
+  return { doing, said: said || null };
+}
+
+/** `describeSteps` for thread `id`, read from T3's database `db` (node:sqlite). */
+export function readSteps(db, id) {
+  try {
+    const steps = db
+      .prepare(
+        `SELECT type, status, json_extract(payload_json, '$.title') AS title, json_extract(payload_json, '$.toolName') AS toolName,
+                substr(json_extract(payload_json, '$.input'), 1, 300) AS input
+         FROM orchestration_v2_projection_turn_items WHERE thread_id = ? ORDER BY ordinal DESC LIMIT 6`,
+      )
+      .all(id);
+    const message = db
+      .prepare(
+        `SELECT substr(json_extract(payload_json, '$.text'), 1, 600) AS text FROM orchestration_v2_projection_turn_items
+         WHERE thread_id = ? AND type = 'assistant_message' ORDER BY ordinal DESC LIMIT 1`,
+      )
+      .get(id);
+    return describeSteps(steps, message?.text);
+  } catch {
+    // An older T3 without these tables.
+    return { doing: null, said: null };
+  }
+}
+
 /** CPU time (jiffies) and memory (pages) per process, from `/proc/<pid>/stat`. */
 export function parseStat(text) {
   const open = text.indexOf("(");

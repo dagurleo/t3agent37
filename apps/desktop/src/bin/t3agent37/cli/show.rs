@@ -166,6 +166,36 @@ pub fn machines(v: &Value, now: u64) -> String {
     out
 }
 
+/// `t3agent37 limit`: the limit on all machines and each one's, with what they spent this month.
+pub fn limits(v: &Value) -> String {
+    let mut out = String::new();
+    let all = &v["limit"];
+    let spent = money(f(all, "spent").unwrap_or(0.));
+    let _ = match f(all, "monthUsd") {
+        Some(limit) => writeln!(out, "All machines: {} a month · spent {spent} this month", t3agent37_lib::store::dollars(limit)),
+        None => writeln!(out, "All machines: no limit · spent {spent} this month {}", dim("(t3agent37 limit 50 sets one)")),
+    };
+    for m in list(v, "machines") {
+        out.push_str(&limit_of(m));
+    }
+    out
+}
+
+/// One machine's limit: "skiff: $10.00 a month · spent $3.20", and why it's stopped if it is.
+pub fn limit_of(m: &Value) -> String {
+    let name = s(m, "name").unwrap_or("?");
+    let spent = money(f(m, "monthSpent").unwrap_or(0.));
+    let mut line = match f(m, "monthLimit") {
+        Some(limit) => format!("{name}: {} a month · spent {spent}", t3agent37_lib::store::dollars(limit)),
+        None => format!("{name}: no limit of its own · spent {spent}"),
+    };
+    if let Some(why) = s(m, "paused") {
+        let _ = write!(line, "\n  {}", bold(&format!("Stopped: {why}.")));
+    }
+    line.push('\n');
+    line
+}
+
 /// `t3agent37 details`: `row` from the machine list, `d` from machine_details.
 pub fn details(row: &Value, d: &Value, now: u64) -> String {
     let mut out = String::new();
@@ -177,9 +207,20 @@ pub fn details(row: &Value, d: &Value, now: u64) -> String {
     if let Some(made) = d.get("createdAt").and_then(Value::as_i64).and_then(|t| chrono::DateTime::from_timestamp(t, 0)) {
         about.push(format!("made {}", made.format("%Y-%m-%d")));
     }
+    if let Some(from) = s(row, "copiedFrom") {
+        about.push(format!("a copy of {from}"));
+    }
     let _ = writeln!(out, "{}", dim(&about.join(" · ")));
     if let Some(code) = s(row, "githubCode") {
         let _ = writeln!(out, "GitHub code {}: enter it on the page that opened", bold(code));
+    }
+    if let Some(why) = s(row, "paused") {
+        let _ = writeln!(out, "{}", bold(&format!("Stopped: {why}.")));
+    }
+    if let Some(at) = row.get("deleteAt").and_then(Value::as_i64) {
+        let left = at - (now / 1000) as i64;
+        let when = if left > 0 { format!("in {}", t3agent37_lib::app::span(left)) } else { "once its work is done".into() };
+        let _ = writeln!(out, "Deleted {when} (t3agent37 delete-after {name} never keeps it).");
     }
 
     section(&mut out, "agents", None);
@@ -216,6 +257,15 @@ pub fn details(row: &Value, d: &Value, now: u64) -> String {
             if let Some(status) = s(p, "status") {
                 let _ = write!(line, " · {status}");
             }
+            let env: Vec<String> = list(d, "env")
+                .iter()
+                .filter(|e| s(e, "projectId") == s(p, "id"))
+                .flat_map(|e| list(e, "files"))
+                .map(|f| format!("{} ({})", s(f, "path").unwrap_or("?"), list(f, "names").iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")))
+                .collect();
+            if !env.is_empty() {
+                let _ = write!(line, " · {}", dim(&format!("env: {}", env.join("; "))));
+            }
             if let Some(i) = p.get("issues").filter(|i| i.is_object()) {
                 let options: Vec<&str> = list(i, "options").iter().filter_map(Value::as_str).collect();
                 let model = s(i, "model").unwrap_or("?");
@@ -234,6 +284,9 @@ pub fn details(row: &Value, d: &Value, now: u64) -> String {
         money(f(d, "costToday").unwrap_or(0.)),
         money(f(d, "costMonth").unwrap_or(0.))
     );
+    if let Some(limit) = f(row, "monthLimit") {
+        let _ = writeln!(out, "  {}", dim(&format!("spent {} of its {} limit this month", money(f(row, "monthSpent").unwrap_or(0.)), t3agent37_lib::store::dollars(limit))));
+    }
     for p in list(d, "projectCosts") {
         let _ = writeln!(
             out,
@@ -266,6 +319,17 @@ pub fn details(row: &Value, d: &Value, now: u64) -> String {
         }
     }
 
+    let (uses, used_by) = (list(row, "links"), list(row, "usedBy"));
+    if !uses.is_empty() || !used_by.is_empty() {
+        section(&mut out, "other machines", None);
+        for l in uses {
+            let _ = writeln!(out, "  uses {}", link_line(l));
+        }
+        for l in used_by {
+            let _ = writeln!(out, "  used by {}", link_line(l));
+        }
+    }
+
     let hooks = list(d, "webhooks");
     let start = d.get("start").filter(|s| s.is_object());
     if !hooks.is_empty() || start.is_some() {
@@ -281,6 +345,53 @@ pub fn details(row: &Value, d: &Value, now: u64) -> String {
         if start.is_some() {
             let _ = writeln!(out, "  start URL on {}", dim(&format!("(t3agent37 start-url {name} shows it)")));
         }
+    }
+    out
+}
+
+/// T3's access level as `t3agent37 link --access` takes it.
+fn access_word(access: &str) -> &str {
+    match access {
+        "read-only" => "read",
+        "approval-required" => "ask",
+        "auto-accept-edits" => "edits",
+        "full-access" => "full",
+        other => other,
+    }
+}
+
+/// "faktor · full · until 23 Dec", and the link's error if it has one.
+fn link_line(l: &Value) -> String {
+    let until = s(l, "expiresAt").and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| format!(" · until {}", t.with_timezone(&chrono::Local).format("%-d %b")));
+    let error = s(l, "lastError").map(|e| format!(" · {e}")).unwrap_or_default();
+    format!("{} · {}{}{error}", s(l, "machine").unwrap_or("?"), access_word(s(l, "access").unwrap_or("?")), until.unwrap_or_default())
+}
+
+/// `t3agent37 links`: which machines may use which, for all of them or one.
+pub fn links(v: &Value, machine: Option<&str>) -> String {
+    let mut out = String::new();
+    for m in list(v, "machines") {
+        let name = s(m, "name").unwrap_or("?");
+        if machine.is_some_and(|w| s(m, "id") != Some(w) && !name.eq_ignore_ascii_case(w)) {
+            continue;
+        }
+        for l in list(m, "links") {
+            let _ = writeln!(out, "{} can use {}", bold(name), link_line(l));
+        }
+        if machine.is_some() {
+            for l in list(m, "usedBy") {
+                let _ = writeln!(out, "{} can use {} · {}", bold(s(l, "machine").unwrap_or("?")), name, access_word(s(l, "access").unwrap_or("?")));
+            }
+        }
+    }
+    if out.is_empty() {
+        out = format!(
+            "{}\n",
+            match machine {
+                Some(m) => format!("{m} uses no other machine, and none uses it."),
+                None => "No machine uses another. `t3agent37 link <machine> <other> --access …` lets one.".into(),
+            }
+        );
     }
     out
 }
@@ -317,6 +428,12 @@ fn activity(out: &mut String, a: &Value, now: u64) {
                 let _ = write!(line, " · {}", duration(now.saturating_sub(at) / 1000));
             }
             let _ = writeln!(out, "  {line}");
+            if let Some(doing) = s(t, "doing") {
+                let _ = writeln!(out, "    ▸ {doing}");
+            }
+            if let Some(said) = s(t, "said") {
+                let _ = writeln!(out, "    {}", dim(&format!("“{said}”")));
+            }
             for b in list(t, "background").iter().filter_map(Value::as_str) {
                 let _ = writeln!(out, "    {}", dim(&format!("↳ {b}")));
             }
@@ -487,5 +604,21 @@ mod tests {
         assert_eq!(ago(NOW - 3 * 86_400_000, NOW), "3d ago");
         assert_eq!(money(0.005), "$0.01");
         assert_eq!(megabytes(536), "536 MB");
+    }
+
+    #[test]
+    fn which_machines_use_which() {
+        let link = json!({"machine": "faktor", "machineId": "ssuxzy3xa0", "access": "full-access", "expiresAt": "2026-12-23T14:02:32.162Z"});
+        let v = json!({"machines": [
+            {"id": "ve92hic1ra", "name": "skiff", "links": [link], "usedBy": []},
+            {"id": "ssuxzy3xa0", "name": "faktor", "links": [], "usedBy": [{"machine": "skiff", "machineId": "ve92hic1ra", "access": "full-access", "expiresAt": "2026-12-23T14:02:32.162Z"}]},
+        ]});
+        let all = links(&v, None);
+        assert!(all.starts_with("skiff can use faktor · full · until 23 Dec"), "{all}");
+        assert_eq!(all.lines().count(), 1);
+        assert!(links(&v, Some("faktor")).starts_with("skiff can use faktor · full"));
+        assert!(links(&json!({"machines": []}), None).starts_with("No machine uses another"));
+        let error = json!({"machine": "faktor", "access": "read-only", "lastError": "unreachable"});
+        assert_eq!(link_line(&error), "faktor · read · unreachable");
     }
 }

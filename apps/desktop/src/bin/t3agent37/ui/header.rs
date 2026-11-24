@@ -112,7 +112,10 @@ impl Panel {
             let title = match &self.view {
                 View::Machine(id) => self.state.machines.iter().find(|m| &m.id == id).map(|m| m.name.clone()).unwrap_or_default(),
                 View::Settings => "Settings".into(),
-                View::New => "New machine".into(),
+                View::New => match self.new_form.as_ref().and_then(|f| f.copy_of.as_ref()) {
+                    Some((_, name)) => format!("Copy of {name}"),
+                    None => "New machine".into(),
+                },
                 View::List => String::new(),
             };
             div()

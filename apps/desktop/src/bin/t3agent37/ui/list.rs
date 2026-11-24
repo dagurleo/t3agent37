@@ -369,6 +369,7 @@ impl Panel {
                 let label = match &item {
                     MenuItem::Act(a) => a.label.clone(),
                     MenuItem::PickProject => model::PICK_PROJECT.to_string(),
+                    MenuItem::Copy => model::COPY.to_string(),
                 };
                 let m = m.clone();
                 list = list.child(menu_item(SharedString::from(format!("menu-{key}-{i}")), &tk).child(label).on_click(inside_row!(
@@ -378,6 +379,7 @@ impl Panel {
                         match &item {
                             MenuItem::Act(a) => this.track(&m, a.clone(), cx),
                             MenuItem::PickProject => this.go_picking(View::Machine(m.id.clone()), true, window, cx),
+                            MenuItem::Copy => this.open_copy_form(&m, window, cx),
                         }
                     }
                 )));

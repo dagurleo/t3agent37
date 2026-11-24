@@ -193,7 +193,7 @@ impl MachineRuntime {
     /// Writes the project's files (its `.env` files) into its folder `cwd` on the machine;
     /// `missing_only`: those the machine doesn't have yet, so none edited there is overwritten.
     /// Returns those that couldn't be written, with why.
-    async fn write_files(&self, project: &Project, cwd: &str, files: Vec<(String, String)>, missing_only: bool) -> Vec<String> {
+    pub(crate) async fn write_files(&self, project: &Project, cwd: &str, files: Vec<(String, String)>, missing_only: bool) -> Vec<String> {
         let (url, token) = (self.upstream_url(), self.upstream_token());
         let relative = |path: &str| if project.subdirectory.is_empty() { path.to_owned() } else { format!("{}/{path}", project.subdirectory) };
         let present: Vec<String> = if missing_only && !files.is_empty() {
@@ -373,7 +373,7 @@ fn explain_clone_failure(e: anyhow::Error, machine: &str) -> anyhow::Error {
 }
 
 /// A folder for the machine's shell: `~/x` as `"$HOME"/'x'`, anything else quoted.
-fn home_path(path: &str) -> String {
+pub(crate) fn home_path(path: &str) -> String {
     match path.strip_prefix("~/") {
         Some(rest) => format!("\"$HOME\"/{}", shell_quote(rest)),
         None if path == "~" => "\"$HOME\"".to_owned(),

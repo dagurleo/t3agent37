@@ -7,6 +7,7 @@ use t3agent37_lib::app::{AgentLogin, MachineState as State, MachineView, Project
 use t3agent37_lib::machine::signin::Account;
 use t3agent37_lib::machine::issues::IssueSettings;
 use t3agent37_lib::machine::provision::SizeInfo;
+use t3agent37_lib::machine::peers::Access;
 
 use crate::backend::Cmd;
 use crate::pixel::MachineState;
@@ -51,6 +52,30 @@ fn action(label: impl Into<String>, busy: &'static str, cmd: Cmd) -> Action {
 pub enum MenuItem {
     Act(Action),
     PickProject,
+    /// The new machine form, as a copy of this one.
+    Copy,
+}
+
+pub const COPY: &str = "Make a copy…";
+
+/// The choices for a throwaway machine's time: none, then an hour to a day.
+pub const DELETE_AFTER: [(Option<u64>, &str); 4] = [(None, "keep"), (Some(3600), "1h"), (Some(4 * 3600), "4h"), (Some(86_400), "1 day")];
+
+/// Its own spending limit: `None` is none.
+pub fn limit(usd: Option<f64>) -> Action {
+    let label = usd.map_or("none".to_owned(), |v| format!("${v:.0}"));
+    action(label, "Saving the limit…", Cmd::Limit(usd))
+}
+/// Keeps a throwaway machine.
+pub fn keep() -> Action {
+    action("Keep it", "Keeping it…", Cmd::DeleteAfter(None))
+}
+/// A project's env files from this computer again, or off the machine.
+pub fn env_copy(project: &str) -> Action {
+    action("Copy again", "Copying env files…", Cmd::Env { project: project.into(), action: t3agent37_lib::app::EnvAction::Copy })
+}
+pub fn env_remove(project: &str) -> Action {
+    action("Remove", "Removing env files…", Cmd::Env { project: project.into(), action: t3agent37_lib::app::EnvAction::Remove })
 }
 
 pub const PICK_PROJECT: &str = "Add a project…";
@@ -179,6 +204,12 @@ pub fn connect_approval(on: bool) -> Action {
 pub fn connect_push(on: bool) -> Action {
     action(if on { "Push to phone" } else { "Stop pushing to phone" }, "Changing phone push…", Cmd::ConnectPush(on))
 }
+/// One of the choices for how far a machine's agents may use `to`: `None` is off.
+pub fn link(to: &MachineView, access: Option<Access>) -> Action {
+    let label = access.map_or("off", Access::short);
+    let busy = if access.is_some() { "Linking…" } else { "Unlinking…" };
+    action(label, busy, Cmd::Link { to: to.id.clone(), to_name: to.name.clone(), access })
+}
 pub fn open_port(port: u16) -> Action {
     action(format!("Open :{port}"), "Opening…", Cmd::OpenPort(port))
 }
@@ -246,6 +277,7 @@ pub fn menu_actions(m: &MachineView, sizes: &[SizeInfo]) -> Vec<MenuItem> {
         out.push(MenuItem::Act(sleep()));
     }
     out.push(MenuItem::PickProject);
+    out.push(MenuItem::Copy);
     if m.paired {
         out.push(MenuItem::Act(repair()));
     }
@@ -387,10 +419,10 @@ pub fn project_costs_note(costs: &[ProjectCost], project_ids: &[&str]) -> Option
         return None;
     }
     let other: Vec<&ProjectCost> = costs.iter().filter(|c| c.project_id.as_deref().is_none_or(|id| !project_ids.contains(&id))).collect();
-    let mut note = "This month's awake time per project, idle minutes after its agents worked included, at the machine's hourly rate.".to_owned();
+    let mut note = "Each project's awake time this month, at the machine's rate.".to_owned();
     let (secs, dollars) = other.iter().fold((0, 0.0), |(s, d), c| (s + c.secs_month, d + c.dollars_month));
     if secs >= 60 {
-        note.push_str(&format!(" Other time (waking, setup, removed projects): {} · {}.", duration(secs), cents(dollars)));
+        note.push_str(&format!(" Other: {} · {}.", duration(secs), cents(dollars)));
     }
     Some(note)
 }
@@ -518,7 +550,7 @@ mod tests {
         assert_eq!(project_costs_note(&[], &["a"]), None);
         let costs = [cost(Some("a"), 7800, 0.106), cost(Some("gone"), 600, 0.008), cost(None, 900, 0.012)];
         let note = project_costs_note(&costs, &["a"]).unwrap();
-        assert!(note.ends_with("Other time (waking, setup, removed projects): 25m · $0.02."), "{note}");
+        assert!(note.ends_with("Other: 25m · $0.02."), "{note}");
         assert!(!project_costs_note(&costs[..1], &["a"]).unwrap().contains("Other"));
     }
 
