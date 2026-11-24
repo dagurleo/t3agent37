@@ -1,49 +1,86 @@
+<p align="center">
+  <img src="apps/web/public/og.png" alt="t3agent37: run your T3 Code agents in the cloud, on Agent37" width="760">
+</p>
+
 # t3agent37
 
-t3agent37 is a menu-bar app that creates cloud machines on your [Agent37 Cloud](https://www.agent37.com) account and adds them to [T3 Code](https://t3.codes) as remote environments. They sleep when idle, billing disk alone, so you pay compute only for the minutes your agents run.
+**Cloud machines for your [T3 Code](https://t3.codes) agents that sleep when nobody's working.**
 
-Chat in T3 Code as usual. A message to a sleeping machine wakes it in a few seconds; running work finishes with your laptop closed.
+t3agent37 is a menu-bar app and a `t3agent37` command. It makes machines on your [Agent37 Cloud](https://www.agent37.com) account and adds them to T3 Code as remote environments, so you chat with an agent on a cloud VM the way you would on your laptop. A message to a sleeping machine wakes it in seconds, work keeps running with your laptop closed, and a sleeping machine bills its disk alone: you pay for compute only while your agents run.
 
-**[t3agent37.dagurleo.com](https://t3agent37.dagurleo.com)** · [Download](https://github.com/dagurleo/t3agent37/releases/latest) · macOS 13+ · [the command](#the-command): macOS and Linux
+**[t3agent37.dagurleo.com](https://t3agent37.dagurleo.com)** · [Download for macOS](https://github.com/dagurleo/t3agent37/releases/latest) · `brew install --cask dagurleo/tap/t3agent37` · [the command](#the-command) on macOS and Linux
 
-## Where it comes from, and why
+## Why t3agent37
 
-t3agent37 is a fork of [t3boat](https://github.com/paukraft/t3boat) by Pau Kraft (MIT). t3boat does the same job on [Boat](https://boat.dev): it gives T3 Code remote machines that sleep when nobody is working. It was forked in November 2026 to run on Agent37 Cloud instead of Boat, because the VMs were already there.
+- **Agents keep going without you.** Close the laptop and the work finishes. Label a GitHub issue and a pull request comes back, with reviews and failed CI handed to the agent. A Sentry alert, a Linear issue or a request from Grok starts an agent on a machine that was asleep.
+- **Machines team up.** One machine's agents can hand work to another of yours, such as the benchmarks for the big one, or a risky fix for a copy. You choose, per pair, how far they may go.
+- **Set up once, copy as needed.** Sign Claude, Codex and GitHub in, install what your projects need, then copy the machine at any size. Each machine keeps its own accounts too, so each can use a different Claude subscription.
+- **Costs are visible and capped.** Agent37 bills per minute. You see costs per machine and per project, a monthly limit stops a machine until you raise it, and throwaway machines delete themselves.
+- **You see what's going on.** Which agent works on what, the command it's running right now and what it last said, what woke the machine, and what keeps its CPU busy.
+- **Use it from anywhere.** The menu bar, a terminal (Linux too), your phone through T3 Connect, a coding agent on your computer through MCP, or a second computer on the same account.
 
-What was kept and what changed:
+## What it does
 
-- **Kept from t3boat:** the localhost proxy (`apps/desktop/src/proxy`), changed by two lines in `upstream.rs` to send the Agent37 key. It keeps T3 Code working while a machine sleeps, so most of the hard T3 protocol work is Pau Kraft's. `apps/desktop/docs/t3-protocol.md` is t3boat's spec of that protocol.
-- **New:** everything that talks to the cloud. `agent37.rs` replaces `boat.rs`. It covers how a machine boots, how it decides to sleep and how costs are read, because Agent37 VMs differ from Boat sandboxes in ways that mattered (see [Agent37 behaviors](CONTRIBUTING.md#agent37-behaviors-verified-live)).
-- **Added on top:**
-  - Restarting T3 after the T3 Connect sign-in.
-  - A wake link, so a phone can wake a machine.
-  - Claude Code's full-access mode working as root.
-  - No "Co-Authored-By: Claude" or "Generated with Claude Code" on what agents commit and open from a machine, unless its Claude settings already say otherwise.
-  - T3 Code's own update ("Update N machines?") updates the machines too, instead of skipping them as "needs a manual update".
-  - A new look: "field agents" over a night skyline instead of boats, in a quiet Graphite palette. The original animated rooftop is a setting.
-  - A native panel drawn with [GPUI](https://gpui.rs) in place of t3boat's Tauri webview, so there's no JavaScript in the app (see [History](CONTRIBUTING.md#history)).
+### Machines
 
-## What you get
+- Create, resize and delete machines (Agent37 VMs: Ubuntu with Docker, 2–8 vCPU) from the menu bar or the terminal
+- They sleep 5 minutes after their agents finish and wake when used: from T3 Code, a GitHub delivery, a webhook, the start URL, a wake link on your phone or another of your machines. Scheduled T3 work wakes them in time
+- **Copies:** a new machine with another's disk as it is now (its projects and their files, work not pushed, its sign-ins and tools), at any size, with a T3 identity of its own. A machine set up once becomes the template for the next
+- **Throwaway machines:** made or copied with a time to go (`--delete-after 2h`), and deleted then, or once their agents finish
+- **Shared between computers:** t3agent37 on another computer with the same Agent37 account lists the machines made elsewhere, and **Add here** gives that computer a sign-in of its own to one
+- T3 Code's own "Update N machines?" updates them, and each runs the T3 version your desktop app runs, or newer
 
-- Create, resize and delete machines (Agent37 VMs: Ubuntu with Docker, 2–8 vCPU) from the menu bar
-- Add projects the way T3 Code's "Add to another machine" does, `.env` files included. A project's env files can be copied again after you change a key, and its details list them by file and variable name, never by value
-- Copies of a machine: a new machine with another's disk as it is now (its projects and their files, work not pushed, its sign-ins and tools), at any size, with a T3 identity of its own. A machine set up once becomes the template for the next
-- Throwaway machines: made, or copied, with a time to go (`--delete-after 2h`), and deleted then, or once their agents finish. `t3agent37 bench` times a command on copies at several sizes at once, then deletes them
-- Spending limits: a monthly limit per machine and one on all of them. You hear about it at 80%; at the limit a machine is stopped, so nothing wakes it (not GitHub, a webhook or another machine) until you raise the limit or the month is over
-- Sign Claude Code, Codex and GitHub in on a machine with their own logins. Each machine has its own sign-ins, so each can use a different account: a different Claude subscription per machine, say. Its details show who each agent is signed in as, the plan, and how much of the plan's limits is used. GitHub can instead take a token that reaches only the repos you pick
-- T3 Connect, to reach a machine from your phone or a browser, plus a wake link for when it's asleep. Optionally, new devices wait for your approval, and agent activity is pushed to the T3 Code phone app
-- Previews: a dev server an agent starts on a machine opens in your own browser at `localhost`, through T3's tunnel. Opening the page wakes the machine; a tab left open doesn't keep it awake
-- Projects set up as they're added: their T3 setup scripts run, or their dependencies install from the lockfile (Bun, pnpm, Yarn, npm, uv and more), and their T3 scripts come along
-- GitHub issues as pull requests (a prototype): turn on **issues** for a project, pick the label and the agent, label an issue, and the machine wakes, works on it in a branch of its own and opens a pull request. Reviews, `/agent` comments and failed CI on that pull request go back to the agent, which pushes fixes to it
-- Webhooks that wake the machine: T3 Code's scheduled tasks can run on a webhook, and each machine's details give those tasks an address that wakes it, so a Sentry alert, a Linear issue or a Zapier step starts an agent on a sleeping machine right away
-- A start URL per machine: an assistant such as Grok, a phone shortcut or a script starts threads in any of the machine's projects with plain web requests, then checks on them, reads the agent's reply and follows up. A request wakes the machine
-- Machines that use each other: let one machine's agents work on another of yours, as far as you choose per pair (read its threads, ask before each change, edit files, T3's auto mode, or anything), say to run benchmarks on a bigger one. They use T3's own tools for it (`delegate_task`), the work shows in T3 Code under the other machine, and a call wakes it. Only you change who may use whom
-- Machines shared between computers: t3agent37 on another computer with the same Agent37 account lists the machines made elsewhere, and **Add here** gives that computer a sign-in of its own to one. GitHub issues and the start URL are the machine's settings, so both computers show the same
-- What each machine is doing: its details show the threads its agents work on (project, model, how long, whether one waits for your approval, what it's running right now and what its agent last said), what woke it, its CPU, memory and disk with the busiest processes, and what its agents finished in the last day; a thread opens in T3 Code on click. The list says which thread is at work, which needs you, or what keeps the CPU busy
+### Projects and accounts
+
+- Add projects the way T3 Code's "Add to another machine" does, `.env` files included. They're set up as they arrive: their T3 setup scripts run, or their dependencies install from the lockfile (Bun, pnpm, Yarn, npm, uv and more), and their T3 scripts come along
+- A project's env files can be copied again after you change a key; its details list them by file and variable name, never by value
+- Sign Claude Code, Codex and GitHub in on each machine with their own logins. Each machine can use a different account (another Claude subscription, a work GitHub), and its details show who each agent is signed in as, the plan, and how much of its usage limits is used. GitHub can instead take a token that reaches only the repos you pick
+- **Previews:** a dev server an agent starts on a machine opens in your own browser at `localhost`, through T3's tunnel. Opening the page wakes the machine; a tab left open doesn't keep it awake
+
+### Agents that start on their own
+
+- **GitHub issues as pull requests** (a prototype): turn on **issues** for a project, pick the label and the agent, label an issue, and the machine wakes, works on it in a branch of its own and opens a pull request. Reviews, `/agent` comments and failed CI on that pull request go back to the agent, which pushes fixes
+- **Webhooks that wake:** T3 Code's scheduled tasks can run on a webhook, and each machine's details give those tasks an address that wakes it first, so a Sentry alert, a Linear issue or a Zapier step starts an agent right away
+- **A start URL per machine:** an assistant such as Grok, a phone shortcut or a script starts threads in any of its projects with plain web requests, then checks on them, reads the reply and follows up
+
+### Machines that work together
+
+- **Links between machines:** let one machine's agents work on another of yours, as far as you choose per pair (read its threads, ask before each change, edit files, T3's auto mode, or anything). They use T3's own tools (`delegate_task`), the work shows in T3 Code under the other machine, and a call wakes it. Only you change who may use whom
+- **Benchmarks on several sizes:** `t3agent37 bench` times a command on copies of a machine at several sizes at once, side by side, then deletes the copies
+
+### Costs and activity
+
+- Costs per machine today and this month, your wallet balance, and what each project cost this month: its agents' time plus the idle minutes after, at the machine's rate
+- **Spending limits:** a monthly limit per machine and one on all of them. You hear about it at 80%; at the limit a machine is stopped, so nothing wakes it (not GitHub, a webhook or another machine) until you raise the limit or the month is over
+- **What each machine is doing:** the threads its agents work on (project, model, how long, whether one waits for your approval, the command it's running and what it last said), what woke it, its CPU, memory and disk with the busiest processes, and what finished in the last day. A thread opens in T3 Code on click
 - Notifications when a machine's agents finish, when your Agent37 wallet runs low, and when a machine stays awake for hours
-- Cost per machine, today and this month, and your wallet balance. Each machine's details also show what each of its projects cost this month: the time its agents worked, plus the idle minutes after, at the machine's hourly rate
-- An MCP server, so agents on your computer can manage machines and open their ports
-- A `t3agent37` command for the terminal: the machines, their details and what they're doing, waking and sleeping them, projects, sign-ins, GitHub issues and the rest, alongside the app. Without the app (on Linux, or a Mac you'd rather not run it on), `t3agent37 serve` runs t3agent37 in its place, at login if you like
+
+### Ways in
+
+- A native menu-bar panel, drawn with [GPUI](https://gpui.rs): no webview, no JavaScript
+- **The `t3agent37` command** for everything the panel does, with tab completion. Without the app (on Linux, or a Mac you'd rather not run it on), `t3agent37 serve` runs t3agent37 in its place, at login if you like
+- An **MCP server**, so Claude Code and Codex on your computer can manage machines, copy them and open their ports
+- **T3 Connect**, to reach a machine from the T3 Code phone app or a browser, with a wake link for when it's asleep. Optionally, new devices wait for your approval, and agent activity is pushed to your phone
+
+## From t3boat to t3agent37
+
+t3agent37 began in November 2026 as a fork of [t3boat](https://github.com/paukraft/t3boat) by Pau Kraft (MIT), which gives T3 Code machines on [Boat](https://boat.dev) that sleep when nobody is working. It was forked to run on Agent37 Cloud, where the VMs already were, and kept growing from there.
+
+- **From t3boat:** the idea, and its core: the localhost proxy that keeps T3 Code working while a machine sleeps (`apps/desktop/src/proxy`, changed by two lines to send the Agent37 key), which holds most of the hard T3 protocol work, with its spec in `apps/desktop/docs/t3-protocol.md`. Also t3boat's first features: creating and sizing machines, adding projects, agent sign-ins, T3 Connect, keep-awake, scheduled work, costs, linked environments for local agents and the MCP server.
+- **Rebuilt for Agent37:** everything that talks to the cloud. `agent37.rs` replaces `boat.rs`, and how a machine boots, decides to sleep and reads its costs changed with it, because Agent37 VMs differ from Boat sandboxes in ways that mattered (see [Agent37 behaviors](CONTRIBUTING.md#agent37-behaviors-verified-live)).
+- **Added since:**
+
+| Area | What's new |
+|---|---|
+| **The app** | A native GPUI panel in place of t3boat's Tauri webview, a new "field agents" look with machine details in tabs, and signed, notarized releases that update themselves, on Homebrew too |
+| **The terminal** | The `t3agent37` command with completions and `update`, and `serve` to run without the app, on Linux too |
+| **Working without you** | GitHub issues to pull requests with reviews and CI fed back, webhooks that wake, the start URL, the wake link |
+| **Machines together** | Links between machines with access per pair, copies, throwaway machines, `bench`, machines shared between computers |
+| **Accounts** | Sign-ins per machine with their account, plan and usage limits, another account in a private window, GitHub signed in on the machine, tokens limited to some repos |
+| **Seeing and spending** | What each agent is running and saying, load and busiest processes, previews at localhost, cost per project, spending limits, notifications |
+| **Fixes that mattered** | T3 restarted after the T3 Connect sign-in, Claude's full-access mode as root, no Claude attribution on commits unless set, T3 Code's update dialog reaching the machines, T3 Code's newer DPoP pairing, projects set up as they're added |
+
+The whole story, panel included, is in [CONTRIBUTING.md](CONTRIBUTING.md#history).
 
 ## What you need
 
@@ -95,14 +132,28 @@ With Homebrew, `brew services start t3agent37` does what `serve --install` does.
 
 ## Usage
 
+### Getting started
+
 1. Click the icon in the menu bar, paste your Agent37 API key, and create a machine.
 2. Accept the new backend in T3 Code.
 3. Sign in Claude or Codex, and GitHub for private repos, under **Accounts** in the machine's details.
-
-A machine's details have four tabs: **Activity** (what it's doing and finished, its costs and monthly limit, sleeping and waking, its size), **Projects** (its projects with their GitHub issues, and previews), **Accounts** (its sign-ins) and **Connections** (T3 Connect and the wake link, other machines, the start URL and webhooks).
 4. Work in T3 Code as usual. Push or open a PR from the machine.
 
+A machine's details have four tabs: **Activity** (what it's doing and finished, its costs and monthly limit, sleeping and waking, its size), **Projects** (its projects with their GitHub issues, and previews), **Accounts** (its sign-ins) and **Connections** (T3 Connect and the wake link, other machines, the start URL and webhooks).
+
+### What a machine is doing
+
+To see what a machine is doing, open its details (**Activity**). While it's up, **now** lists the threads its agents work on, each with its project, model, how long it has run and what it's up to ("working", "needs your approval", "waits on subagents"), with any command it left running (a dev server). Under them: its CPU, memory and disk, and its busiest processes, which say what's behind "busy CPU"; at the top right, when it woke and what woke it (T3 Code, GitHub, the start URL, a webhook, scheduled work). **finished** lists what its agents finished in the last day; while it sleeps, as of when it went to sleep. Click a thread to open it in T3 Code.
+
+### Accounts
+
 To give a machine another account than your browser's (a second Claude subscription, a work GitHub), click **Other account** next to **Sign in**, or **Switch account** once it's signed in. The page opens in a private window of your browser, where you sign in with that account. A switch takes effect when you finish it. **Cancel**, next to it while it waits, stops it, and the machine keeps its old sign-in (closing the browser window doesn't stop it). Safari can't be opened in a private window from another app, so there the page opens as usual: switch accounts on the page, or sign out there first.
+
+### Only some GitHub repos
+
+To give a machine only some of your GitHub repos, click **Some repos only…** next to GitHub under **Accounts** in its details, then **Open GitHub**. GitHub's page for a new fine-grained token opens with its name, 90 days and the permissions machines need filled in. Pick the repositories under **Repository access**, generate the token, paste it into the field (it stays hidden) and press Enter. The app checks it with GitHub before waking the machine, signs the machine's gh in with it (the account it had is signed out), and then lists the repos it reaches and when it expires. One token reaches one owner's repos: your account's or one organization's. Fine-grained tokens can't read GitHub's Checks API, so with one, feedback on the agent's pull requests sees CI from GitHub Actions only, not other checks such as Cloudflare builds.
+
+### From your phone
 
 To use a machine from your phone:
 
@@ -113,9 +164,31 @@ To use a machine from your phone:
 
 The wake link only wakes the machine and holds it up for 5 minutes. Using the machine still takes your T3 sign-in. **Replace link** retires the old link within about 10 seconds.
 
-To give a machine only some of your GitHub repos, click **Some repos only…** next to GitHub under **Accounts** in its details, then **Open GitHub**. GitHub's page for a new fine-grained token opens with its name, 90 days and the permissions machines need filled in. Pick the repositories under **Repository access**, generate the token, paste it into the field (it stays hidden) and press Enter. The app checks it with GitHub before waking the machine, signs the machine's gh in with it (the account it had is signed out), and then lists the repos it reaches and when it expires. One token reaches one owner's repos: your account's or one organization's. Fine-grained tokens can't read GitHub's Checks API, so with one, feedback on the agent's pull requests sees CI from GitHub Actions only, not other checks such as Cloudflare builds.
+### Previews
 
 To see what an agent built, open it under **previews**, in the **Projects** tab of the machine's details: servers its agents and terminals started are listed there, and **Open another port…** takes any port by number. Each one opens at `http://localhost:<port>` (the same number when it's free). While the machine sleeps, opening or reloading the page wakes it; anything a page sends on its own is dropped, so a forgotten tab never keeps waking it.
+
+### Spending limits
+
+To keep spending in check, pick a **monthly limit** under **Activity** in a machine's details, or one for all machines together in **Settings → spending** (or `t3agent37 limit skiff 10`, `t3agent37 limit 50`, `t3agent37 limit` to see them). They count Agent37's own bill for the UTC month, or the machine's awake time at its rate when that's more, since Agent37 settles its bill hourly. At 80% you get a notification. At the limit the machine is stopped, work and all: unlike a sleeping machine, a stopped one doesn't wake when its addresses are called, so GitHub, webhooks, the start URL, the wake link and your other machines can't wake it either. Its details say why, and nothing wakes it until you raise or remove the limit, or the next month begins. Limits are yours to set: agents see them (`list_machines`) but can't change them.
+
+### Copies
+
+To make a machine like one you have, open its ⋯ menu and pick **Make a copy…**, or `t3agent37 copy skiff skiff2 --size huge`. The copy has the other's disk as it is now: its projects with their files and branches (work not pushed too), its threads, Claude's, Codex's and GitHub's sign-ins, and whatever was installed. It gets a T3 identity of its own, so T3 Code asks you to add it as a new machine; T3 Connect, GitHub issues, the start URL and links to other machines stay with the original. The original isn't touched, and copying a sleeping machine leaves it asleep. A copy takes a few minutes.
+
+### Throwaway machines
+
+To have a machine go by itself, give it a time when you make it: **delete it after** in the new machine form (1 hour, 4 hours or a day), or `--delete-after 90m` on `create` and `copy`. `t3agent37 delete-after raven 2h` sets one later, and **Keep it** in its details or `delete-after raven never` keeps it. It's deleted at that time, or once its agents finish if they still work then, never under running work; you hear about it 10 minutes before. That needs t3agent37 running on this computer: a machine whose time came while it was off sleeps meanwhile and goes at the next start.
+
+### Benchmarks on several sizes
+
+To compare sizes, `t3agent37 bench skiff --sizes small,huge --project Tantalum -- cargo build --release` copies skiff at each size at once, runs the command on each in the project's folder, times it there, and prints the times side by side with the output's last lines; then it deletes the copies (`--keep` keeps them). Each copy bills while it runs.
+
+### Env files
+
+To change a project's env files on a machine after changing them here, click **Copy again** next to its **env** line under **Projects** (or `t3agent37 env skiff Tantalum --copy`): this computer's copies go over the machine's. The line lists the files and the variables they set, never the values; **Remove** deletes them from the machine. A project whose GitHub issues are on hands each issue's text to an agent that can read them, so label only issues you trust there, or keep keys off that machine.
+
+### GitHub issues to pull requests
 
 To hand GitHub issues to a machine, flip **issues** next to the project under **Projects** in its details (the machine must be signed in to GitHub with admin rights on the repo). Pick the label (`agent` unless you change it; it's made in the repo if it's new), the model and how hard it thinks, from what the machine's signed-in agents offer, then **Turn on**. **Change**, under the project, changes them later. Then label an issue:
 
@@ -135,7 +208,11 @@ The agent's first message has the issue's text and its comments up to the label 
 
 The issue's text goes to an agent that can push, so only labels from people with push access count. Anyone who can open an issue can still write its text, so on a public repo read an issue before you label it.
 
+### Webhooks that wake
+
 To have any service start an agent, make a scheduled task with a webhook in T3 Code: its prompt, project and agent, and optionally filters (run only when `body.action` is `created`, say) and a signing secret. T3's own webhook URL goes through T3 Connect, which can't wake a sleeping machine: the delivery waits until something else wakes it. So the machine's details list its webhook tasks under **webhooks**, each with **Copy URL**: an address that wakes the machine first. T3 checks the token, signature and filters, logs the delivery and runs the task, as with its own URL. A delivery T3 turns away or filters out lets the machine sleep again after about a minute. The addresses work without T3 Connect too. Anyone with one can send the task deliveries, so treat it like a password, and use a signing secret for anything that matters.
+
+### The start URL
 
 To start threads from Grok, a phone shortcut or a script, turn on **start url** under **Connections** in the machine's details, and **Copy URL**. Then, with any HTTP client:
 
@@ -150,23 +227,17 @@ A request wakes the machine if it sleeps. Threads run in full-access mode, with 
 
 For Grok Bot, which has a computer of its own, give it the address and the token and tell it to call the address with `curl` and the header when you ask it to start something on your machine. Don't give it the **Wake link** by mistake: that one only wakes the machine and answers with an "is awake" page.
 
+### Machines that use each other
+
 To let one machine use another, open its details and pick, under **Connections → other machines**, how far its agents may go on each of your other machines: **off**, **read** (its threads, nothing started), **ask** (threads there ask you in T3 Code before each change), **edits** (they edit files and ask before commands), **auto** (T3's auto mode) or **full** (they run anything). Or from a terminal: `t3agent37 link skiff faktor --access full`, `t3agent37 links`, `t3agent37 unlink skiff faktor`. Then ask an agent on skiff to, say, "run the benchmarks on faktor": it finds faktor with T3's `t3_environment_links` and hands it the work with `delegate_task`, faktor wakes (in a few seconds) and does it in a thread of its own, and the result comes back to skiff's thread. Both machines stay up while the work runs.
 
 It's T3's linked environments underneath, between your machines: a link is one way (faktor can't reach skiff unless you allow that too), lasts 30 days and is made again before it runs out while the machine using it is up, and **off** removes it on both machines. A machine that others may use takes their calls at its inbox's public address, where only T3's own sign-in and the link's token let anything through. Agents see which machines they may use (`list_machines`) but can't change it: only the panel and the command can.
 
+### A second computer
+
 To use a machine from a second computer, install t3agent37 there with the same Agent37 API key. Its list shows the machines made on other computers under **on your agent37 account**. **Add here** wakes one, signs this computer in to it with a T3 sign-in of its own, and asks T3 Code there to add it. Then both computers use it as their own: its threads and projects, sign-ins, GitHub issues, webhook tasks and start URL are the machine's. What each app shows comes from the machine whenever it's up, so a change made on one computer shows on the other the next time it sees the machine awake, and a wake from the other computer shows within a minute. Keep both copies up to date: a machine remembers which version of t3agent37 set it up, and an older one leaves a newer one's scripts alone, so nothing that one added stops working.
 
-To see what a machine is doing, open its details (**Activity**). While it's up, **now** lists the threads its agents work on, each with its project, model, how long it has run and what it's up to ("working", "needs your approval", "waits on subagents"), with any command it left running (a dev server). Under them: its CPU, memory and disk, and its busiest processes, which say what's behind "busy CPU"; at the top right, when it woke and what woke it (T3 Code, GitHub, the start URL, a webhook, scheduled work). **finished** lists what its agents finished in the last day; while it sleeps, as of when it went to sleep. Click a thread to open it in T3 Code.
-
-To keep spending in check, pick a **monthly limit** under **Activity** in a machine's details, or one for all machines together in **Settings → spending** (or `t3agent37 limit skiff 10`, `t3agent37 limit 50`, `t3agent37 limit` to see them). They count Agent37's own bill for the UTC month, or the machine's awake time at its rate when that's more, since Agent37 settles its bill hourly. At 80% you get a notification. At the limit the machine is stopped, work and all: unlike a sleeping machine, a stopped one doesn't wake when its addresses are called, so GitHub, webhooks, the start URL, the wake link and your other machines can't wake it either. Its details say why, and nothing wakes it until you raise or remove the limit, or the next month begins. Limits are yours to set: agents see them (`list_machines`) but can't change them.
-
-To make a machine like one you have, open its ⋯ menu and pick **Make a copy…**, or `t3agent37 copy skiff skiff2 --size huge`. The copy has the other's disk as it is now: its projects with their files and branches (work not pushed too), its threads, Claude's, Codex's and GitHub's sign-ins, and whatever was installed. It gets a T3 identity of its own, so T3 Code asks you to add it as a new machine; T3 Connect, GitHub issues, the start URL and links to other machines stay with the original. The original isn't touched, and copying a sleeping machine leaves it asleep. A copy takes a few minutes.
-
-To have a machine go by itself, give it a time when you make it: **delete it after** in the new machine form (1 hour, 4 hours or a day), or `--delete-after 90m` on `create` and `copy`. `t3agent37 delete-after raven 2h` sets one later, and **Keep it** in its details or `delete-after raven never` keeps it. It's deleted at that time, or once its agents finish if they still work then, never under running work; you hear about it 10 minutes before. That needs t3agent37 running on this computer: a machine whose time came while it was off sleeps meanwhile and goes at the next start.
-
-To compare sizes, `t3agent37 bench skiff --sizes small,huge --project Tantalum -- cargo build --release` copies skiff at each size at once, runs the command on each in the project's folder, times it there, and prints the times side by side with the output's last lines; then it deletes the copies (`--keep` keeps them). Each copy bills while it runs.
-
-To change a project's env files on a machine after changing them here, click **Copy again** next to its **env** line under **Projects** (or `t3agent37 env skiff Tantalum --copy`): this computer's copies go over the machine's. The line lists the files and the variables they set, never the values; **Remove** deletes them from the machine. A project whose GitHub issues are on hands each issue's text to an agent that can read them, so label only issues you trust there, or keep keys off that machine.
+### From a terminal
 
 From a terminal, `t3agent37 help` lists the commands. For example:
 
@@ -185,6 +256,8 @@ t3agent37 env skiff Tantalum --copy     # this computer's .env files over the ma
 ```
 
 A machine is its name or id. `list`, `details` and `projects` take `--json` for what the MCP tools give agents. A long command (creating a machine, a sign-in, adding a project) shows the machine's progress as it goes, and ^C stops the waiting, not the work. `details` never wakes a machine, and leaves secrets out (the webhooks' waking URLs, the start URL): `wake-link` and `start-url` print theirs when you ask, and `details --json` has them all.
+
+### Settings
 
 Settings has the notifications (wallet line, hours awake, agents finishing), whether projects get set up when they're added, and the look: the panel's size (Standard, Large or Huge; the expand button at the top of the list, ⌘+ and ⌘− change it while it's open) and the animated rooftop instead of the still skyline.
 
@@ -216,7 +289,9 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 
 ## Status (2026-11-24)
 
-**Works, tested live on Agent37:**
+<details>
+<summary><b>Works, tested live on Agent37</b> (34 areas)</summary>
+
 - Creating a machine and adding it to T3 Code.
 - Signing in Claude Code, Codex and GitHub.
 - Running agent threads, including Claude Code in full-access mode.
@@ -259,7 +334,11 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
   - `delete-after faktor-small 1m` deleted it 41 s after its time, gone from Agent37 too.
   - In the panel, clicked through: ⋯ → **Make a copy…** opened the form as "Copy of faktor" (a free name, faktor's size, what comes along, **delete it after**, whose choice changed its line); a machine's **monthly limit** set to $2 and back to none, with the toast and "Spent $0.21 of $2"; Settings' limit on all machines set to $10 and back; and under **now**, a working agent's "▸ running python3 …" and what it had just said.
 
-**Not tried yet:**
+</details>
+
+<details>
+<summary><b>Not tried yet</b> (20)</summary>
+
 - In the panel: the **throwaway** section with **Keep it**, the stopped-at-a-limit banner and the **env** lines (the same calls worked from the command), and making a copy from the form, which T3 Code then asks to add.
 - `copy` with T3 Code adding the copy (only `bench`'s copies, which aren't added, were made), and a bench on several sizes at once.
 - The limit on all machines together, and a pause lifting at a new month.
@@ -280,6 +359,8 @@ The full internals are in [apps/desktop/docs/architecture.md](apps/desktop/docs/
 - The Graphite look, the panel's sizes and the animated rooftop setting on screen (built and unit-tested; the mockups were reviewed).
 - A GitHub token limited to some repos, end to end: GitHub's filled-in page, the panel's field, gh on the machine with the token, the repos it lists, and pull request CI from GitHub Actions. What was tried: the machine's check of its GitHub login (on skiff, gh's own sign-in read as reaching every repo) and GitHub refusing a made-up token (401).
 - The "Update N machines?" dialog in T3 Code updating a machine through the proxy (the same update call was made on the machine itself). Also, under the launcher: moving a machine to a newer desktop version by provisioning.
+
+</details>
 
 **Known gaps:**
 - **T3 Connect allows 3 tunnels per T3 account** (T3's free plan, as seen in November 2026). Past that, turning it on for a machine signs in and restarts T3, then fails with T3's own reason, "Relay managed tunnel limit reached": unlink an environment in T3 Connect first.
