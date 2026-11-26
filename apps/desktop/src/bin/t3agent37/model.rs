@@ -66,6 +66,20 @@ pub fn limit(usd: Option<f64>) -> Action {
     let label = usd.map_or("none".to_owned(), |v| format!("${v:.0}"));
     action(label, "Saving the limit…", Cmd::Limit(usd))
 }
+/// Bases: made of a machine, back to one, refreshed.
+pub fn make_base() -> Action {
+    action("Make it a base", "Stopping it as a base…", Cmd::Base(Some(true)))
+}
+pub fn unbase() -> Action {
+    action("Make it a machine again", "Saving…", Cmd::Base(Some(false)))
+}
+pub fn refresh_base() -> Action {
+    action("Refresh", "Refreshing the base, a few minutes…", Cmd::Base(None))
+}
+/// A spawned copy's work back into its checkout.
+pub fn collect() -> Action {
+    action("Bring work back", "Bringing its work back…", Cmd::Collect)
+}
 /// Keeps a throwaway machine.
 pub fn keep() -> Action {
     action("Keep it", "Keeping it…", Cmd::DeleteAfter(None))
@@ -270,6 +284,13 @@ pub fn menu_actions(m: &MachineView, sizes: &[SizeInfo]) -> Vec<MenuItem> {
         return Vec::new();
     }
     let mut out = Vec::new();
+    // A base only refreshes; nothing else wakes it.
+    if m.base.is_some() {
+        out.push(MenuItem::Act(refresh_base()));
+        out.push(MenuItem::Copy);
+        out.push(MenuItem::Act(unbase()));
+        return out;
+    }
     if m.state == State::Asleep {
         out.push(MenuItem::Act(wake()));
     }
@@ -278,6 +299,11 @@ pub fn menu_actions(m: &MachineView, sizes: &[SizeInfo]) -> Vec<MenuItem> {
     }
     out.push(MenuItem::PickProject);
     out.push(MenuItem::Copy);
+    match &m.spawned {
+        Some(s) if !s.runner => out.push(MenuItem::Act(collect())),
+        Some(_) => {}
+        None => out.push(MenuItem::Act(make_base())),
+    }
     if m.paired {
         out.push(MenuItem::Act(repair()));
     }

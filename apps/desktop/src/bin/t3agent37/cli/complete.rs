@@ -39,7 +39,10 @@ fn slots(command: &str) -> &'static [Slot] {
         "start-url" => &[Machine, Words(&["on", "off", "replace"])],
         "add-mcp" => &[Words(&["claude-code", "codex"])],
         "link" | "unlink" => &[Machine, Machine],
-        "copy" | "bench" => &[Machine],
+        "copy" | "bench" | "collect" => &[Machine],
+        "base" => &[Machine, Words(&["on", "off", "refresh"])],
+        "on-a-copy" => &[ON_OFF],
+        "new-machines" => &[Words(&["start", "claude", "github", "codex", "setup"])],
         "delete-after" => &[Machine, Words(&["30m", "1h", "2h", "1d", "never"])],
         "limit" => &[Machine, Words(&["5", "10", "25", "50", "off"])],
         "env" => &[Machine, MachineProject],
@@ -59,6 +62,9 @@ fn flag_slot(flag: &str) -> Option<Slot> {
         "access" => Some(Slot::Words(&["read", "ask", "edits", "auto", "full"])),
         "sizes" => Some(Slot::Size),
         "delete-after" => Some(Slot::Words(&["30m", "1h", "2h", "4h", "1d"])),
+        "base" => Some(Slot::Machine),
+        "max-hours" => Some(Slot::Words(&["2", "4", "8", "24"])),
+        "timeout" => Some(Slot::Words(&["10", "30", "60", "120"])),
         _ => None,
     }
 }
@@ -259,7 +265,7 @@ mod tests {
         assert_eq!(names(candidates(&words(&["create", "raven", "--size"]), "").await)[0], "small");
         assert_eq!(names(candidates(&words(&["issues", "raven", "Tantalum"]), "").await), ["on", "off"]);
         assert_eq!(names(candidates(&words(&["issues", "raven", "--label", "x", "Tantalum"]), "").await), ["on", "off"]);
-        assert_eq!(names(candidates(&words(&["sign-in", "raven"]), "--").await), ["--other-account", "--cancel", "--help"]);
+        assert_eq!(names(candidates(&words(&["sign-in", "raven"]), "--").await), ["--other-account", "--cancel", "--token", "--no-token", "--help"]);
         assert_eq!(names(candidates(&words(&["help"]), "").await).len(), COMMANDS.len());
         assert!(candidates(&words(&["sizes"]), "").await.is_empty());
         assert!(candidates(&words(&["nonsense"]), "").await.is_empty());

@@ -66,6 +66,11 @@ trait Tools: Send + Sync + 'static {
     fn call_to_end(self: Arc<Self>, call: Call) -> impl Future<Output = Result<String>> + Send {
         self.call(call)
     }
+
+    /// Whether the user lets agents send work to copies of the base (`spawn_machine`).
+    fn agents_may_spawn(&self) -> bool {
+        true
+    }
 }
 
 /// `tools/call` params: the tool's name and its arguments.
@@ -115,6 +120,69 @@ enum Call {
         #[serde(rename = "timeoutMinutes")]
         timeout_minutes: Option<u32>,
     },
+    /// A copy of a base with a checkout here, for a thread here to hand work.
+    SpawnMachine {
+        path: String,
+        base: Option<String>,
+        size: Option<String>,
+        #[serde(rename = "maxHours")]
+        max_hours: Option<u64>,
+    },
+    SpawnStatus {},
+    CollectMachine {
+        machine: String,
+        apply: Option<bool>,
+        #[serde(default)]
+        keep: bool,
+    },
+    /// Bases are the user's to make and refresh: the command's and the panel's.
+    Base {
+        machine: Option<String>,
+        action: Option<String>,
+    },
+    BaseSync {
+        path: Option<String>,
+        #[serde(default)]
+        add: bool,
+    },
+    /// `t3agent37 run`: the command's alone, as it streams the output.
+    RunStart {
+        path: String,
+        command: String,
+        base: Option<String>,
+        size: Option<String>,
+        #[serde(rename = "timeoutMinutes")]
+        timeout_minutes: Option<u32>,
+    },
+    RunOutput {
+        machine: String,
+        job: String,
+        #[serde(default)]
+        offset: u64,
+    },
+    RunStop {
+        machine: String,
+        job: String,
+    },
+    /// Whether agents may send work to copies: the user's switch, in the command or Settings.
+    OnACopy { on: Option<bool> },
+    /// A secret only the user hands over, in the command.
+    ClaudeToken {
+        machine: String,
+        token: Option<String>,
+    },
+    /// What new machines start with, and what spawns start as: the user's, in the command.
+    NewMachines {},
+    NewMachinesStart { from: String },
+    /// A sign-in saved for new machines: claude, github or codex, its secret, or `remove`.
+    SaveSignIn {
+        agent: String,
+        token: Option<String>,
+        #[serde(default)]
+        remove: bool,
+        number: Option<usize>,
+    },
+    MachineSetup { path: Option<String> },
     ListProjects {},
     AddProject { machine: String, project: String },
     WakeMachine { machine: String },
@@ -242,6 +310,26 @@ async fn dispatch<T: Tools>(tools: Arc<T>, request: Value) -> Option<Value> {
                 "Only the user sets spending limits: `t3agent37 limit`, Settings, or the machine's details in t3agent37's panel.".into(),
                 true,
             )),
+            Ok(Call::OnACopy { .. }) => Ok(content(
+                "Only the user lets agents send work to copies: Settings → Agents may send work to copies, or `t3agent37 on-a-copy on`.".into(),
+                true,
+            )),
+            Ok(Call::SpawnMachine { .. }) if !tools.agents_may_spawn() => Ok(content(
+                "The user hasn't let agents send work to copies of the base. Ask them to turn it on: Settings → Agents may send work to copies in t3agent37, or `t3agent37 on-a-copy on`.".into(),
+                true,
+            )),
+            Ok(Call::NewMachines { .. } | Call::NewMachinesStart { .. } | Call::SaveSignIn { .. } | Call::MachineSetup { .. }) => Ok(content(
+                "Only the user decides what new machines start with and hands over their sign-ins: `t3agent37 new-machines`.".into(),
+                true,
+            )),
+            Ok(Call::Base { .. } | Call::BaseSync { .. } | Call::ClaudeToken { .. }) => Ok(content(
+                "Only the user makes and refreshes bases and hands over tokens: `t3agent37 base`, `t3agent37 sign-in <machine> claude --token`.".into(),
+                true,
+            )),
+            Ok(Call::RunStart { .. } | Call::RunOutput { .. } | Call::RunStop { .. }) => Ok(content(
+                "Run commands on a copy of the base with the command, which streams their output: `t3agent37 run -- <command>` in the checkout.".into(),
+                true,
+            )),
             Ok(Call::Bench { .. }) => Ok(content(
                 "Benchmarks on copies take minutes: ask the user to run `t3agent37 bench` in a terminal, or use copy_machine and delete_machine.".into(),
                 true,
@@ -361,6 +449,46 @@ fn tool_list() -> Value {
                 "deleteAfterMinutes": { "type": "integer", "minimum": 1, "description": "Delete it this long after it's made" },
             }),
             &["machine", "name"],
+        ),
+        tool(
+            "spawn_machine",
+            "Makes a throwaway machine for work from this thread, with the checkout at `path` as it is \
+             now (its branch, commits not pushed, changes not committed, new files): a new machine signed in \
+             with what the user saved in t3agent37, or a copy of their base (a machine kept stopped with \
+             their sign-ins and tools), as they chose. A minute or two for a new one, several minutes for a copy; \
+             it answers early, then spawn_status waits for it. When ready it gives an environmentId and \
+             projectId: hand the copy work with T3's delegate_task, target {environmentId, projectId}, and \
+             its thread reports back to yours. Then collect_machine brings its changes into the checkout \
+             and deletes it. Several can run at once, each on its own copy. One left with nothing running \
+             for 30 minutes has its work brought back to a branch, and goes; maxHours (24 unless set) is \
+             the most it lives. The user pays for each while it works.",
+            json!({
+                "path": { "type": "string", "description": "The checkout to give it: your working folder (absolute)" },
+                "base": { "type": "string", "description": "Only when the user asks: a base to copy, or \"new\" for a new machine, instead of what they chose in t3agent37" },
+                "size": size("Defaults to default, or the base's own"),
+                "maxHours": { "type": "integer", "minimum": 1, "maximum": 168, "description": "Deleted after this many hours whatever happens" },
+            }),
+            &["path"],
+        ),
+        tool(
+            "spawn_status",
+            "Waits up to about half a minute for spawn_machine's copies still being made, then says how \
+             each stands: ready (with how to hand it work), still being made, or failed.",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "collect_machine",
+            "Brings a spawned machine's work back into the checkout it was made for: a branch \
+             t3agent37/<machine> there (t3agent37-<machine> where the repo has a branch named t3agent37), and its changes made to the checkout's files when they fit them \
+             as they are now (apply: false leaves the files alone). Then deletes the machine, unless keep. \
+             Refused while an agent still works there.",
+            json!({
+                "machine": machine,
+                "apply": { "type": "boolean", "description": "Make its changes to the checkout's files too (default true)" },
+                "keep": { "type": "boolean", "description": "Keep the machine after (default false)" },
+            }),
+            &["machine"],
         ),
         tool(
             "delete_after",
@@ -578,8 +706,8 @@ fn tool_list() -> Value {
         ),
         tool(
             "add_to_t3",
-            "Shows T3 Code's dialog to add this machine again (e.g. after the user removed it there); \
-             the user confirms in T3 Code.",
+            "Shows T3 Code's dialog to add this machine (after the user removed it there, or a spawned copy, \
+             which isn't added, when the user wants to write to its threads themselves); the user confirms in T3 Code.",
             json!({ "machine": machine }),
             &["machine"],
         ),
@@ -606,6 +734,12 @@ impl Call {
                 "Copying {machine} to {name}, a few minutes. list_machines shows its progress. When it is \
                  ready, T3 Code asks the user to add it as a backend."
             ),
+            Self::SpawnMachine { .. } => "Making a machine with the checkout's files: a minute or two for a new one, several minutes \
+                 for a copy of a base. Call spawn_status to wait for it; it says how to hand it work."
+                .into(),
+            Self::CollectMachine { machine, .. } => format!(
+                "Still bringing {machine}'s work back; spawn_status and list_machines show {machine} gone once it's done."
+            ),
             Self::SignInAgent { machine, agent, .. } => format!(
                 "The {agent} sign-in for {machine} is open in the browser; the user must click Authorize. \
                  Once done, list_machines stops listing {agent} under signedOut, and machine_details shows \
@@ -624,6 +758,10 @@ impl Call {
 }
 
 impl Tools for App {
+    fn agents_may_spawn(&self) -> bool {
+        self.settings().agents_spawn
+    }
+
     async fn call(self: Arc<Self>, call: Call) -> Result<String> {
         let pending = call.pending();
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -692,6 +830,58 @@ async fn run(app: &Arc<App>, call: Call) -> Result<String> {
                 m.id()
             )
         }
+        Call::SpawnMachine { path, base, size, max_hours } => app.spawn_machine(&path, base.as_deref(), size.as_deref(), max_hours).await?,
+        Call::SpawnStatus {} => app.spawn_status(WAIT.saturating_sub(Duration::from_secs(5))).await,
+        Call::CollectMachine { machine, apply, keep } => app.collect(&machine, apply.unwrap_or(true), keep).await?,
+        Call::Base { machine, action } => match (machine, action.as_deref()) {
+            (None, _) => {
+                let bases = app.bases();
+                if bases.is_empty() {
+                    "There's no base yet: `t3agent37 base <machine> on` makes one of a machine you set up.".into()
+                } else {
+                    bases.iter().map(|m| crate::app::view_of(m).detail).zip(bases.iter().map(|m| m.record().name)).map(|(d, n)| format!("{n}: {d}")).collect::<Vec<_>>().join("\n")
+                }
+            }
+            (Some(m), Some("on")) => app.set_base(&m, true).await?,
+            (Some(m), Some("off")) => app.set_base(&m, false).await?,
+            (Some(m), Some("refresh")) => app.refresh_base(&m).await?,
+            (Some(_), Some(other)) => bail!("no base action {other}: on, off or refresh"),
+            (Some(m), None) => {
+                let m = app.machine(&m)?;
+                let name = m.record().name;
+                if m.record().upkeep.base.is_some() { format!("{name}: {}", crate::app::view_of(&m).detail) } else { format!("{name} isn't a base.") }
+            }
+        },
+        Call::BaseSync { path, add } => app.base_sync(path.as_deref(), add)?,
+        Call::OnACopy { on } => app.set_on_a_copy(on),
+        Call::RunStart { path, command, base, size, timeout_minutes } => {
+            app.run_start(&path, &command, base.as_deref(), size.as_deref(), timeout_minutes.unwrap_or(120)).await?.to_string()
+        }
+        Call::RunOutput { machine, job, offset } => app.run_output(&machine, &job, offset).await?.to_string(),
+        Call::RunStop { machine, job } => app.run_stop(&machine, &job).await?,
+        Call::ClaudeToken { machine, token } => {
+            let m = app.machine(&machine)?;
+            let token = token.map(crate::machine::signin::Secret);
+            m.set_claude_token(token.as_ref()).await?
+        }
+        Call::NewMachines {} => app.new_machines(),
+        Call::NewMachinesStart { from } => app.set_spawn_from(&from)?,
+        Call::SaveSignIn { agent, token, remove, number } => {
+            use crate::app::SignInChange;
+            let token = token.filter(|t| !t.trim().is_empty()).map(crate::machine::signin::Secret);
+            let change = match (agent.to_lowercase().as_str(), token, remove) {
+                ("claude", t, false) if t.is_some() => SignInChange::Claude(t),
+                ("claude", _, true) => SignInChange::Claude(None),
+                ("codex", t, false) if t.is_some() => SignInChange::Codex(t),
+                ("codex", _, true) => SignInChange::Codex(None),
+                ("github", Some(t), false) => SignInChange::Github(t),
+                ("github", _, true) => SignInChange::GithubRemove(number),
+                ("claude" | "codex" | "github", _, false) => bail!("no {agent} sign-in given"),
+                _ => bail!("no sign-in for {agent}: claude, github or codex"),
+            };
+            app.change_sign_in(change).await?
+        }
+        Call::MachineSetup { path } => app.set_machine_setup(path.as_deref())?,
         Call::ListProjects {} => serde_json::to_string(&app.local_projects().await?)?,
         Call::AddProject { machine, project } => {
             let m = app.machine(&machine)?;
@@ -952,6 +1142,19 @@ mod tests {
         }
     }
 
+    /// The user hasn't let agents send work to copies.
+    struct NoSpawn;
+
+    impl Tools for NoSpawn {
+        async fn call(self: Arc<Self>, call: Call) -> Result<String> {
+            Ok(format!("{call:?}"))
+        }
+
+        fn agents_may_spawn(&self) -> bool {
+            false
+        }
+    }
+
     async fn rpc(method: &str, params: Value) -> Value {
         let request = json!({ "jsonrpc": "2.0", "id": 7, "method": method, "params": params });
         dispatch(Arc::new(Echo), request).await.unwrap()
@@ -972,9 +1175,11 @@ mod tests {
     async fn lists_tools_and_rejects_unknown_methods() {
         let tools = rpc("tools/list", json!({})).await["result"]["tools"].clone();
         let names: Vec<&str> = tools.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names.len(), 24);
+        assert_eq!(names.len(), 27);
+        assert!(names.contains(&"spawn_machine") && names.contains(&"collect_machine") && !names.contains(&"base") && !names.contains(&"run_start"));
         assert!(names.contains(&"sign_in_agent") && names.contains(&"delete_machine") && names.contains(&"wake_link"));
         assert!(names.contains(&"copy_machine") && names.contains(&"project_env") && !names.contains(&"spending_limit"));
+        assert!(!names.contains(&"save_sign_in") && !names.contains(&"new_machines_start") && !names.contains(&"machine_setup"));
         assert_eq!(rpc("ping", json!({})).await["result"], json!({}));
         assert_eq!(rpc("resources/list", json!({})).await["error"]["code"], -32601);
     }
@@ -1009,6 +1214,30 @@ mod tests {
         }
         let r = rpc("tools/call", json!({ "name": "bench", "arguments": { "machine": "dev", "sizes": ["small"], "command": "true" } })).await;
         assert_eq!(r["result"]["isError"], true);
+        // Agents can't let themselves send work to copies.
+        let r = rpc("tools/call", json!({ "name": "on_a_copy", "arguments": { "on": true } })).await;
+        assert_eq!(r["result"]["isError"], true);
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap().starts_with("Only the user lets agents"));
+        // Nor hand over sign-ins for new machines, or change what spawns start as.
+        for call in [
+            json!({ "name": "save_sign_in", "arguments": { "agent": "github", "token": "ghp_x" } }),
+            json!({ "name": "save_sign_in", "arguments": { "agent": "claude", "remove": true } }),
+            json!({ "name": "new_machines_start", "arguments": { "from": "new" } }),
+            json!({ "name": "machine_setup", "arguments": { "path": "/tmp/x.sh" } }),
+            json!({ "name": "new_machines", "arguments": {} }),
+        ] {
+            let r = rpc("tools/call", call).await;
+            assert_eq!(r["result"]["isError"], true);
+            assert!(r["result"]["content"][0]["text"].as_str().unwrap().starts_with("Only the user decides what new machines"));
+        }
+        // With the switch on (Echo), spawn_machine goes through; off, it's turned away.
+        let spawn = json!({ "name": "spawn_machine", "arguments": { "path": "/src/app" } });
+        let r = rpc("tools/call", spawn.clone()).await;
+        assert_eq!(r["result"]["isError"], false);
+        let request = json!({ "jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": spawn });
+        let r = dispatch(Arc::new(NoSpawn), request).await.unwrap();
+        assert_eq!(r["result"]["isError"], true);
+        assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("hasn't let agents send work to copies"));
         for bad in [
             json!({ "name": "format_disk", "arguments": { "machine": "dev" } }),
             json!({ "name": "wake_machine", "arguments": {} }),

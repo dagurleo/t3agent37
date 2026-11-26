@@ -61,6 +61,16 @@ impl App {
                 continue;
             }
             if now >= at {
+                // A spawned copy's work comes back first, to a branch of its checkout.
+                if r.upkeep.spawned.as_ref().is_some_and(|s| !s.runner && s.collected.is_none())
+                    && let Err(e) = self.collect(&r.name, false, true).await
+                {
+                    tracing::info!("{} stays until its work can come back: {e:#}", r.name);
+                    if self.overdue_noted.lock().unwrap().insert(r.id.clone()) {
+                        self.shared.notify(format!("{}'s time is up", r.name), format!("Its work couldn't come back yet, so it stays: {e:#}"));
+                    }
+                    continue;
+                }
                 match self.delete_machine(&m, false).await {
                     Ok(()) => self.shared.notify(format!("Deleted {}", r.name), "Its time was up, as you set when you made it."),
                     Err(e) => {

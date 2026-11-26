@@ -126,6 +126,55 @@ pub struct Upkeep {
     /// never values (`machine/env.rs`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<ProjectEnv>,
+    /// A base: kept stopped, so copies start from it as it is (`app/base.rs`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<Base>,
+    /// A copy of a base made for a checkout on this computer (`app/spawn.rs`): its work comes
+    /// back there, or it runs that checkout's commands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spawned: Option<Spawned>,
+}
+
+/// A machine kept stopped for copies to start from: signed in, with the user's projects and
+/// tools. Nothing wakes it but `refresh`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Base {
+    /// When it became one (unix seconds).
+    pub since: i64,
+    /// When a refresh last brought it up to date (unix seconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refreshed_at: Option<i64>,
+}
+
+/// A machine made for a checkout on this computer, new or a copy of a base: given its files
+/// (`sent`, on top of `head`), it works there for a thread here (`runner` false) or runs the
+/// checkout's commands (`t3agent37 run`, `runner` true).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Spawned {
+    /// The checkout's folder on this computer (its git top level).
+    pub checkout: String,
+    /// The repository's folder on the machine.
+    pub root: String,
+    /// Its T3 project there.
+    pub project_id: String,
+    /// The branch it works on there.
+    pub branch: String,
+    /// The checkout's HEAD when it was given its files.
+    pub head: String,
+    /// What it was given: the checkout's files then, as a commit on `head`, kept here as
+    /// `refs/t3agent37/<machine>/sent`.
+    pub sent: String,
+    /// The base it's a copy of; empty for a new machine.
+    pub base: String,
+    pub runner: bool,
+    /// Seen with nothing running there since then (unix seconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_since: Option<i64>,
+    /// Its work came back here, to this branch of the checkout.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collected: Option<String>,
 }
 
 /// Why a machine is stopped and kept off.
@@ -353,6 +402,21 @@ pub struct Settings {
     /// Dollars a UTC month for all machines together, as Agent37 bills them: every machine is
     /// stopped there; None: no limit.
     pub month_limit_usd: Option<f64>,
+    /// Files and folders under the home folder (`.claude/skills`) that copies of a base get from
+    /// this computer: the agents' settings as they are here now.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub base_sync: Vec<String>,
+    /// Agents on this computer may send work to copies of the base (`spawn_machine`), with the
+    /// `on-a-copy` skill for Claude Code and Codex here. The user's to turn on: copies cost.
+    pub agents_spawn: bool,
+    /// What spawned machines (`spawn`, `run`) start as: a copy of this base, by name, or a new
+    /// machine with the sign-ins saved here (`app/newmachine.rs`) when None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spawn_from: Option<String>,
+    /// A shell script on this computer that every new machine runs once it's made, before its
+    /// projects arrive: the user's own tools (a Rust toolchain, say).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine_setup: Option<String>,
 }
 
 impl Default for Settings {
@@ -366,6 +430,10 @@ impl Default for Settings {
             animated_rooftop: false,
             panel_size: PanelSize::Standard,
             month_limit_usd: None,
+            base_sync: Vec::new(),
+            agents_spawn: false,
+            spawn_from: None,
+            machine_setup: None,
         }
     }
 }

@@ -76,6 +76,8 @@ pub struct UiState {
     pub elsewhere: Vec<ElsewhereMachine>,
     pub costs: Costs,
     pub settings: Settings,
+    /// What new machines get signed in with: no secrets, only what's saved.
+    pub sign_ins: t3agent37_lib::app::SignInsSaved,
     pub sizes: &'static [SizeInfo],
     pub mcp: McpStatus,
 }
@@ -158,6 +160,11 @@ pub enum Cmd {
     /// A project's env files: this computer's copied over again, or taken off it; resolves to
     /// what was done.
     Env { project: String, action: EnvAction },
+    /// Makes it a base (`Some(true)`, stopping it), a machine to work on again (`Some(false)`),
+    /// or refreshes the base (`None`); resolves to what was done.
+    Base(Option<bool>),
+    /// Brings a spawned copy's work back into its checkout and deletes it; resolves to what came.
+    Collect,
 }
 
 pub type Res<T = ()> = Result<T, String>;
@@ -231,6 +238,7 @@ impl Backend {
             elsewhere: app.as_ref().map(|a| a.elsewhere()).unwrap_or_default(),
             costs: app.as_ref().map(|a| a.costs()).unwrap_or_default(),
             settings: app.as_ref().map(|a| a.settings()).unwrap_or_default(),
+            sign_ins: app.as_ref().map(|a| a.sign_ins_saved()).unwrap_or_default(),
             sizes: SIZES,
             mcp: inner.mcp.lock().unwrap().clone(),
         }
@@ -411,6 +419,9 @@ async fn act(inner: Arc<Inner>, id: String, cmd: Cmd) -> Res<Option<String>> {
         Cmd::Limit(usd) => return app.set_limit(Some(&id), usd).await.map(Some).map_err(err),
         Cmd::DeleteAfter(secs) => return app.set_delete_after(&id, secs).map(Some).map_err(err),
         Cmd::Env { project, action } => return app.project_env(&id, &project, action).await.map(Some).map_err(err),
+        Cmd::Base(Some(on)) => return app.set_base(&id, on).await.map(Some).map_err(err),
+        Cmd::Base(None) => return app.refresh_base(&id).await.map(Some).map_err(err),
+        Cmd::Collect => return app.collect(&id, true, false).await.map(Some).map_err(err),
         Cmd::Open { thread } => app.open_in_t3(&machine, thread.as_deref()),
         Cmd::Pair => app.pair(&machine),
         Cmd::Wake => machine.wake_for("Wake in t3agent37").await,

@@ -579,7 +579,7 @@ impl Panel {
                     }
                     (Ok(_), Cmd::TurnOnConnect) => this.toast(format!("{name} is reachable from your other devices"), false, cx),
                     // What the backend said: what it spent, when it goes, which files.
-                    (Ok(Some(text)), Cmd::Limit(_) | Cmd::DeleteAfter(_) | Cmd::Env { .. }) => this.toast(text, false, cx),
+                    (Ok(Some(text)), Cmd::Limit(_) | Cmd::DeleteAfter(_) | Cmd::Env { .. } | Cmd::Base(_) | Cmd::Collect) => this.toast(text, false, cx),
                     (Ok(_), Cmd::Link { to_name, access, .. }) => {
                         let text = match access {
                             Some(a) => format!("{name}'s agents can use {to_name} now: {}", a.about()),

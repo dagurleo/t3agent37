@@ -185,7 +185,7 @@ impl MachineRuntime {
 
     /// Restarts the T3 server on the machine and waits until it answers again. boot.sh starts a
     /// new one as soon as the old one exits.
-    async fn restart_t3(&self) -> Result<()> {
+    pub(crate) async fn restart_t3(&self) -> Result<()> {
         let out = self
             .shared
             .a37

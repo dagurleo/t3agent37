@@ -257,13 +257,16 @@ pub async fn inbox_url(a37: &Agent37, instance: &str) -> Result<String> {
 }
 
 /// Creates a new machine end to end. Takes about a minute, most of it the installs.
-/// On failure after `created`, the caller deletes the instance.
+/// `prepare` runs on the VM before anything else, so T3 starts with what it leaves (the agents'
+/// `agent.env`). On failure after `created`, the caller deletes the instance.
+#[allow(clippy::too_many_arguments)]
 pub async fn create(
     a37: &Agent37,
     name: &str,
     size: &str,
     t3_version: &str,
     local_port: u16,
+    prepare: Option<&str>,
     created: impl FnOnce(&str),
     progress: impl Fn(&str),
 ) -> Result<Machine> {
@@ -279,6 +282,9 @@ pub async fn create(
         Some(p) => p.url.clone(),
         None => heartbeat_url(a37, &id).await?,
     };
+    if let Some(prepare) = prepare {
+        a37.exec_ok(&id, prepare, 60).await.context("preparing the VM")?;
+    }
     progress("Installing T3 Code");
     let secret = random_token();
     let provisioned = run(a37, &id, name, t3_version, &secret, &heartbeat, true).await?;

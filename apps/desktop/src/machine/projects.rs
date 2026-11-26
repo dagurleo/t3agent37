@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 const CLONE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// A setup still going after this goes on unwatched.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-const SETUP_SH: &str = include_str!("setup-project.sh");
+pub(crate) const SETUP_SH: &str = include_str!("setup-project.sh");
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -382,7 +382,7 @@ pub(crate) fn home_path(path: &str) -> String {
 }
 
 /// `github.com/owner/name` for a git remote URL, in any of its forms.
-fn repo_key_of(remote: &str) -> Option<String> {
+pub(crate) fn repo_key_of(remote: &str) -> Option<String> {
     let https = projects::https_clone_url(remote);
     let rest = https.split_once("://").map_or(https.as_str(), |(_, r)| r);
     let rest = rest.split_once('@').map_or(rest, |(_, r)| r);

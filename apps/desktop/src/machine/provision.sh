@@ -240,8 +240,10 @@ run() {
 }
 cd /root
 # The mode provision.sh chose: T3's service launcher, which runs `t3 serve` with service.env's
-# settings and swaps it for T3 Code's updates, or `t3 serve` directly.
-run t3 /bin/bash -c 'if [ "$(cat /root/.t3agent37/t3-mode 2>/dev/null)" = launcher ]; then
+# settings and swaps it for T3 Code's updates, or `t3 serve` directly. agent.env holds what the
+# agents T3 runs take from the environment (Claude's long-lived token, `sign-in --token`).
+run t3 /bin/bash -c '[ -f /root/.t3agent37/agent.env ] && { set -a; . /root/.t3agent37/agent.env; set +a; }
+if [ "$(cat /root/.t3agent37/t3-mode 2>/dev/null)" = launcher ]; then
   T3CODE_HOME=/root/.t3 exec /root/.local/bin/t3 __service-launcher
 fi
 exec /root/.local/bin/t3 serve --host 0.0.0.0 --port 3773 --no-browser' &

@@ -49,6 +49,9 @@ impl Panel {
                     body.push(self.finished(m, &a, &tk, cx).into_any_element());
                 }
                 if !gone {
+                    if m.base.is_some() || m.spawned.is_some() {
+                        body.push(self.base_or_spawned(m, busy, &tk, cx).into_any_element());
+                    }
                     if m.delete_at.is_some() {
                         body.push(self.lifetime(m, busy, &tk, cx).into_any_element());
                     }
@@ -394,6 +397,32 @@ impl Panel {
             None => format!("Spent {spent} this month · a limit stops it there until you raise it"),
         };
         kit::section("monthly limit", None, None, div().flex().flex_col().gap(px(6.)).pt(px(4.)).child(choices).child(kit::hint(hint, &tk)), &tk)
+    }
+
+    /// A base: copies start from it, with Refresh. A spawned copy: the checkout it's for, with
+    /// "Bring work back".
+    fn base_or_spawned(&mut self, m: &MachineView, busy: bool, tk: &Tokens, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let tk = *tk;
+        let now = (model::now_ms() / 1000) as i64;
+        let (title, text, act) = match (&m.base, &m.spawned) {
+            (Some(b), _) => {
+                let refreshed = b.refreshed_at.map_or_else(|| "not refreshed yet".to_owned(), |t| format!("refreshed {} ago", app::span(now - t)));
+                ("base", format!("Stopped; copies start from it as it is · {refreshed}"), Some(model::refresh_base()))
+            }
+            (None, Some(s)) if s.runner => ("runs commands", format!("For {} · `t3agent37 run` there", s.checkout), None),
+            (None, Some(s)) => {
+                let back = s.collected.as_ref().map_or("its work comes back there".to_owned(), |b| if b.is_empty() { "it changed nothing".into() } else { format!("its work is on {b}") });
+                ("spawned", format!("For {} · {back}", s.checkout), s.collected.is_none().then(model::collect))
+            }
+            (None, None) => ("", String::new(), None),
+        };
+        let m2 = m.clone();
+        let line = kit::line().child(div().flex_1().min_w_0().child(text)).when_some(act, |l, act| {
+            l.child(kit::button("base-act", Btn::Outline, Size::Sm, busy, &tk).child(act.label.clone()).when(!busy, |b| {
+                b.on_click(cx.listener(move |this, _, _, cx| this.track(&m2, act.clone(), cx)))
+            }))
+        });
+        kit::section(title, None, None, line, &tk)
     }
 
     /// A throwaway machine: when it's deleted, and "Keep it".

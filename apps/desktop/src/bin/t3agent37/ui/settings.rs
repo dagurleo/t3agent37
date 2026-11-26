@@ -288,15 +288,83 @@ impl Panel {
                 cx,
                 |s, on| s.animated_rooftop = on,
             ));
-        let projects = div().flex().flex_col().gap(px(8.)).py(px(11.)).border_t_1().border_color(tk.line).child(kit::caption(&tk).child("projects")).child(toggle(
-            "set-up-projects",
-            "Set up projects after adding them",
-            "Runs the project's T3 setup scripts, or installs its dependencies from its lockfile",
-            settings.set_up_projects,
-            &tk,
-            cx,
-            |s, on| s.set_up_projects = on,
-        ));
+        let projects = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .py(px(11.))
+            .border_t_1()
+            .border_color(tk.line)
+            .child(kit::caption(&tk).child("projects"))
+            .child(toggle(
+                "set-up-projects",
+                "Set up projects after adding them",
+                "Runs the project's T3 setup scripts, or installs its dependencies from its lockfile",
+                settings.set_up_projects,
+                &tk,
+                cx,
+                |s, on| s.set_up_projects = on,
+            ))
+            .child(toggle(
+                "agents-spawn",
+                "Agents may send work to copies",
+                "\"On a copy: …\" in a thread in any project runs it on a machine of its own, and its changes come back",
+                settings.agents_spawn,
+                &tk,
+                cx,
+                |s, on| s.agents_spawn = on,
+            ));
+
+        // What spawned machines start as: new, or a copy of one of the bases.
+        let from = settings.spawn_from.clone();
+        let options: Vec<Option<String>> =
+            std::iter::once(None).chain(state.machines.iter().filter(|m| m.base.is_some()).map(|m| Some(m.name.clone()))).collect();
+        let mut starts = div().flex().flex_none().max_w(px(220.)).border_1().border_color(tk.frame);
+        for (i, opt) in options.into_iter().enumerate() {
+            let on = opt == from;
+            let label = opt.clone().unwrap_or_else(|| "new".into());
+            starts = starts.child(segment(("spawn-from", i), i == 0, on, &tk).h(px(26.)).px(px(8.)).child(label).when(!on, |s| {
+                s.on_click(cx.listener(move |this, _, _, cx| {
+                    let opt = opt.clone();
+                    this.change_settings(move |s| s.spawn_from = opt, cx)
+                }))
+            }));
+        }
+        let saved = &state.sign_ins;
+        let github = if saved.github.is_empty() { "nothing saved".to_owned() } else { saved.github.join(" · ") };
+        let saved_row = |what: &'static str, text: String| {
+            div()
+                .flex()
+                .justify_between()
+                .gap(px(12.))
+                .child(div().flex_none().child(what))
+                .child(div().min_w_0().text_right().font_family(MONO).text_size(px(11.)).text_color(tk.muted).child(text))
+        };
+        let new_machines = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .py(px(11.))
+            .border_t_1()
+            .border_color(tk.line)
+            .child(kit::caption(&tk).child("new machines"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.))
+                    .child(div().flex().flex_col().gap(px(2.)).min_w_0().child("Spawned machines start").child(kit::hint(
+                        "As new machines with these sign-ins, or as copies of a base with its tools",
+                        &tk,
+                    )))
+                    .child(starts),
+            )
+            .child(saved_row("Claude", if saved.claude { "long-lived token".into() } else { "nothing saved".into() }))
+            .child(saved_row("GitHub", github))
+            .child(saved_row("Codex", if saved.codex { "OpenAI API key".into() } else { "signed out".into() }))
+            .when_some(settings.machine_setup.clone(), |d, p| d.child(saved_row("Setup script", p)))
+            .child(kit::hint("Saved on this computer with `t3agent37 new-machines`, and written onto each machine t3agent37 creates.", &tk));
 
         let account = state.account.as_ref().map(|a| {
             if a.past_due {
@@ -328,6 +396,7 @@ impl Panel {
                     .child(alerts)
                     .child(spending)
                     .child(projects)
+                    .child(new_machines)
                     .child(version)
                     .overflow_y_scrollbar()
                     .id("settings-body"),

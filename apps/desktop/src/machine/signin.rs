@@ -149,19 +149,39 @@ impl MachineRuntime {
             .exec(&id, &format!("rm -rf '{dir}'; pkill -f '{}' || true", agent.login()), 30)
             .await;
         result?;
-        // T3 re-checks the provider and tells T3 Code; the sign-in nudge goes away with it, and
-        // the recorded config learns it too.
-        let refreshed = upstream::call(
-            &self.upstream_url(),
-            &self.upstream_token(),
-            "server.refreshProviders",
-            serde_json::json!({}),
-        )
-        .await;
+        self.refresh_providers().await;
+        Ok(())
+    }
+
+    /// T3 re-checks its agents' sign-ins and tells T3 Code (a sign-in nudge goes away with it),
+    /// and the recorded config learns them too.
+    pub(crate) async fn refresh_providers(&self) {
+        let refreshed = upstream::call(&self.upstream_url(), &self.upstream_token(), "server.refreshProviders", serde_json::json!({})).await;
         if let Ok(result) = refreshed {
             self.cache.lock().unwrap().fold_providers(&result["providers"]);
             self.save_cache();
         }
+    }
+
+    /// A new machine's gh signed in with a token saved on this computer (`app/newmachine.rs`),
+    /// which GitHub took when it was saved. git uses it from there. The machine is up.
+    pub async fn put_github_token(&self, token: &Secret, expires: Option<String>) -> Result<()> {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&token.0);
+        let login = format!("echo {} | base64 -d | gh auth login --hostname github.com --git-protocol https --with-token", shell_quote(&b64));
+        self.shared.a37.exec_ok(&self.sandbox_id(), &login, 60).await.context("signing gh in")?;
+        self.refresh_github().await;
+        self.update_record(|r| r.github_token_expires = expires);
+        Ok(())
+    }
+
+    /// A new machine's Codex signed in with an OpenAI API key saved on this computer. Codex's
+    /// own login renews itself, so machines sharing one could sign each other out; a key doesn't
+    /// change. The machine is up.
+    pub async fn put_openai_key(&self, key: &Secret) -> Result<()> {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&key.0);
+        let login = format!("echo {} | base64 -d | codex login --with-api-key", shell_quote(&b64));
+        self.shared.a37.exec_ok(&self.sandbox_id(), &login, 60).await.context("signing Codex in")?;
+        self.refresh_providers().await;
         Ok(())
     }
 
@@ -279,6 +299,29 @@ pub fn github_token_page(machine: &str) -> String {
     )
 }
 
+/// What `claude setup-token` prints: `sk-ant-oat01-…`. Only characters that go into a shell
+/// file as they are.
+pub fn check_claude_token(token: &str) -> Result<String> {
+    let token = token.trim();
+    let ok = token.starts_with("sk-ant-")
+        && (30..=512).contains(&token.len())
+        && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !ok {
+        bail!("that isn't a token from `claude setup-token` (it starts with sk-ant-)");
+    }
+    Ok(token.to_owned())
+}
+
+/// An OpenAI API key, for Codex: `sk-…` (`sk-proj-…` for a project's).
+pub fn check_openai_key(key: &str) -> Result<String> {
+    let key = key.trim();
+    let ok = key.starts_with("sk-") && (20..=512).contains(&key.len()) && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !ok {
+        bail!("that isn't an OpenAI API key (it starts with sk-)");
+    }
+    Ok(key.to_owned())
+}
+
 /// A token for a machine's gh: a fine-grained personal access token (`github_pat_…`), or a
 /// classic one (`ghp_…`), which reaches every repository like gh's own sign-in.
 pub fn check_token_shape(token: &str) -> Result<String> {
@@ -288,6 +331,16 @@ pub fn check_token_shape(token: &str) -> Result<String> {
         bail!("That isn't a GitHub token. A fine-grained one starts with github_pat_");
     }
     Ok(token.to_owned())
+}
+
+/// A GitHub token saved for new machines: as `check_token_shape`, or gh's own sign-in (`gho_…`,
+/// what `gh auth token` prints).
+pub fn check_saved_github_token(token: &str) -> Result<String> {
+    let t = token.trim();
+    if t.starts_with("gho_") && t.len() >= 36 && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Ok(t.to_owned());
+    }
+    check_token_shape(t)
 }
 
 /// What GitHub says about a token: whose it is and when it expires.
@@ -459,6 +512,46 @@ impl MachineRuntime {
         self.shared.changed();
         let reach = self.record().github_reach.map_or_else(|| "every repo it can reach".to_owned(), |r| r.describe());
         Ok(format!("@{}, {reach}", info.login))
+    }
+
+    /// Claude on the machine signed in with a long-lived token from `claude setup-token` (made
+    /// on any computer, in the browser), or back on its own login (`None`). The token goes in
+    /// `agent.env`, which boot.sh loads into T3's environment, so the agents T3 runs use it over
+    /// any login. Claude's own login is put aside meanwhile: a base's copies all start with it,
+    /// and one copy refreshing it could sign the others out. Restarts T3, so not while an agent
+    /// works there. Wakes the machine.
+    pub async fn set_claude_token(&self, token: Option<&Secret>) -> Result<String> {
+        let token = token.map(|t| check_claude_token(&t.0)).transpose()?;
+        let name = self.record().name;
+        self.ensure_awake().await?;
+        if self.watchdog_get("/status?fresh").await?.busy {
+            bail!("an agent works on {name}, and T3 restarts for this: try again once it's done");
+        }
+        // boot.sh loads agent.env from this version's scripts on.
+        self.kept_awake(self.upgrade_if_needed()).await?;
+        let (d, c) = ("/root/.t3agent37", "/root/.claude/.credentials.json");
+        let script = match &token {
+            Some(t) => {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(format!("CLAUDE_CODE_OAUTH_TOKEN={t}\n"));
+                format!(
+                    "umask 077; echo {} | base64 -d > {d}/agent.env.new && mv -f {d}/agent.env.new {d}/agent.env; \
+                     [ -f {c} ] && mv -f {c} {c}.t3agent37-off; true",
+                    shell_quote(&b64)
+                )
+            }
+            None => format!("rm -f {d}/agent.env; [ -f {c}.t3agent37-off ] && [ ! -f {c} ] && mv -f {c}.t3agent37-off {c}; true"),
+        };
+        let a37 = &self.shared.a37;
+        a37.exec_ok(&self.sandbox_id(), &script, 30).await.context("putting the token on the machine")?;
+        self.kept_awake(self.restart_t3()).await?;
+        self.shared.changed();
+        Ok(match token {
+            Some(_) => format!(
+                "Claude on {name} uses the long-lived token now. Its own login is put aside, so copies of {name} share the token \
+                 without signing each other out. `sign-in {name} claude --no-token` goes back to the login."
+            ),
+            None => format!("Claude on {name} is back on its own login, if it had one."),
+        })
     }
 
     /// Which repositories a fine-grained token on the machine can push to (`GITHUB_REACH`).
@@ -672,7 +765,7 @@ fn callback_port(url: &str) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{account, callback_port, check_token_shape, device_code, from_curl, github_token_page, parse_github_state, parse_reach, Secret};
+    use super::{account, callback_port, check_saved_github_token, check_token_shape, device_code, from_curl, github_token_page, parse_github_state, parse_reach, Secret};
     use serde_json::json;
 
     #[test]
@@ -687,6 +780,10 @@ mod tests {
         assert!(check_token_shape(&format!("ghp_{}", "x".repeat(36))).is_ok());
         assert!(check_token_shape("github_pat_short").is_err());
         assert!(check_token_shape(&format!("gho_{}", "x".repeat(36))).is_err());
+        // gh's own sign-in is for new machines, not for "Some repos only…".
+        assert!(check_saved_github_token(&format!("gho_{}", "x".repeat(36))).is_ok());
+        assert!(check_saved_github_token(&format!("gho_{}; x", "x".repeat(36))).is_err());
+        assert!(check_saved_github_token(&fine).is_ok());
         assert!(check_token_shape(&format!("github_pat_{}; rm -rf /", "x".repeat(40))).is_err());
         assert_eq!(format!("{:?}", Secret(fine)), "Secret(…)");
         assert_eq!(parse_github_state("me\nlimited 0123456789abcdef\n"), Some(("me".into(), Some("0123456789abcdef".into()))));

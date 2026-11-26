@@ -165,7 +165,7 @@ pub async fn setup() -> Result<i32> {
 
 /// A line from the terminal without echoing it, or from stdin when that isn't a terminal
 /// (`t3agent37 setup < key.txt`).
-fn read_secret(prompt: &str) -> Result<String> {
+pub(super) fn read_secret(prompt: &str) -> Result<String> {
     let stdin = std::io::stdin();
     if !stdin.is_terminal() {
         let mut line = String::new();

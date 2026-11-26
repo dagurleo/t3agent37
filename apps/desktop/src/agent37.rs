@@ -378,13 +378,45 @@ impl Agent37 {
             "auto_sleep": true,
             "idle_timeout_seconds": crate::machine::provision::IDLE_TIMEOUT_SECS,
         });
+        let since = chrono::Utc::now().timestamp() - 60;
         match self.send(reqwest::Method::POST, &format!("/instances/{id}/fork"), Some(&body), Duration::from_secs(300)).await {
             Ok(v) => Ok(serde_json::from_value(v)?),
+            // A copy of skiff (large, 20 GB) wasn't answered in 5 minutes, twice, yet was listed
+            // by then (2026-11-25): an unanswered fork may well be on its way, so it's taken up.
+            Err(e) if !e.downcast_ref::<ApiError>().is_some_and(|a| a.status < 500) => match self.made_anyway(name, since).await {
+                Some(i) => {
+                    tracing::info!("the fork of {id} wasn't answered ({e:#}), but Agent37 made {}", i.id);
+                    Ok(i)
+                }
+                None => {
+                    self.delete_strays(name).await;
+                    Err(e)
+                }
+            },
             Err(e) => {
                 self.delete_strays(name).await;
                 Err(e)
             }
         }
+    }
+
+    /// This app's instance named `name`, made since `since` (unix seconds), if Agent37 lists one
+    /// within a minute.
+    async fn made_anyway(&self, name: &str, since: i64) -> Option<Instance> {
+        for _ in 0..12 {
+            if let Ok(all) = self.list().await
+                && let Some(i) = all.into_iter().find(|i| {
+                    i.name.as_deref() == Some(name)
+                        && i.metadata.as_ref().is_some_and(|m| m["app"] == "t3agent37")
+                        && i.created.is_some_and(|c| c >= since)
+                        && !matches!(i.status.as_str(), "failed" | "deleting" | "deleted")
+                })
+            {
+                return Some(i);
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+        None
     }
 
     /// Only on a running machine; a VM cold-boots onto its new shape.

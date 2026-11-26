@@ -54,6 +54,7 @@ pub async fn serve(machine: Arc<MachineRuntime>) -> Result<()> {
         .route("/oauth/mcp/decision", post(link::decision))
         .route("/oauth/mcp/token", post(link::token))
         .route("/mcp", any(link::mcp))
+        .route("/api/links/thread/{*read}", get(link::thread_read))
         .route("/api/orchestration/shell", get(shell_snapshot))
         .route("/api/orchestration/threads/{thread}/bounded", get(thread_snapshot))
         .route("/api/voice/status", get(voice_status))

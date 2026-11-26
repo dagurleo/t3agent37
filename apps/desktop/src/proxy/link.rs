@@ -128,6 +128,28 @@ pub async fn mcp(State(m): M, req: Request) -> Response {
     relay(&m, parts, Body::from(body), route).await
 }
 
+/// Another server reading one of the machine's threads over the link: T3 Code shows a thread
+/// on an environment it only links to (a spawned copy) through the server that links, which asks
+/// for it at `/api/links/thread/{stream,history,item}` with the link's own token. Without this
+/// route they fell to `forward`, which takes only T3 Code's token, and the read was refused (401,
+/// "refused the read", 2026-11-25). An explicit read (history, an item) is a person opening the
+/// thread and wakes the machine; the stream, which an open pane opens again by itself, doesn't.
+pub async fn thread_read(State(m): M, req: Request) -> Response {
+    let (parts, body) = req.into_parts();
+    let now = chrono::Utc::now().timestamp();
+    let linked = auth::bearer(&parts.headers)
+        .is_some_and(|t| m.record().link_tokens.iter().any(|l| l.token == t && l.expires_at > now));
+    if !linked {
+        return super::unauthorized();
+    }
+    let wake = !parts.uri.path().ends_with("/stream");
+    if wake {
+        m.user_action();
+    }
+    let route = Relay { target: target(&parts.uri), authorization: parts.headers.get(header::AUTHORIZATION).cloned(), wake };
+    relay(&m, parts, body, route).await
+}
+
 /// A linker gives the handshake that opens its MCP session 3 s, less than a wake takes; its
 /// tool calls may wait for minutes. So for a sleeping machine the proxy answers the handshake
 /// itself and starts the wake. The call that follows waits for the machine, which answers 404

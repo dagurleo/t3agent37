@@ -239,6 +239,8 @@ pub struct MachineRuntime {
     last_activity: Mutex<Option<(activity::Activity, SystemTime)>>,
     /// Why this app is waking it, for the watchdog's "woke for" (`wake_for`).
     wake_why: Mutex<Option<&'static str>>,
+    /// A base is up for its refresh: it may wake (`app/base.rs`).
+    pub(crate) base_open: std::sync::atomic::AtomicBool,
 }
 
 /// Marks a provisioning as running for as long as it's held, so the panel can say so.
@@ -286,6 +288,7 @@ impl MachineRuntime {
             github_code: Mutex::new(None),
             signing_in: Mutex::new(None),
             sign_in_canceled: Default::default(),
+            base_open: Default::default(),
             sign_in_wake: tokio::sync::Notify::new(),
             upgrading: Mutex::new(None),
             awake_since: Mutex::new(None),
@@ -548,6 +551,14 @@ impl MachineRuntime {
         // is over (`app/limits.rs`). Not a failed wake, so no notification for it either.
         if let Some(p) = self.record().upkeep.paused {
             bail!("{}", p.why(&self.record().name));
+        }
+        // A base stays stopped, as copies start from it, until a refresh opens it.
+        if self.record().upkeep.base.is_some() && !self.base_open.load(std::sync::atomic::Ordering::SeqCst) {
+            let name = self.record().name;
+            bail!(
+                "{name} is a base: it stays stopped so copies start from it as it is. `t3agent37 base {name} refresh` brings it \
+                 up to date, `t3agent37 base {name} off` makes it a machine to work on again"
+            );
         }
         if let Some((e, at)) = self.wake_failure.lock().unwrap().clone() {
             if at.elapsed() < WAKE_COOLDOWN {
@@ -861,7 +872,7 @@ impl MachineRuntime {
         let _ = self.refresh_power().await;
     }
 
-    async fn watchdog_get(&self, path: &str) -> Result<WatchdogStatus> {
+    pub(crate) async fn watchdog_get(&self, path: &str) -> Result<WatchdogStatus> {
         self.watchdog_request(reqwest::Method::GET, path, None).await
     }
 
@@ -1238,6 +1249,11 @@ impl MachineRuntime {
         let finished = std::mem::take(last_working);
         *idle_since = None;
         if !self.shared.settings.read().unwrap().notify_finished {
+            return;
+        }
+        // A spawned copy's work reaches the thread that asked for it, and the copy goes after:
+        // that it finished is no news (it said "sleeps in 5 minutes", 2026-11-25).
+        if self.record().upkeep.spawned.is_some() {
             return;
         }
         let name = self.record().name;

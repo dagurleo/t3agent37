@@ -16,13 +16,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+mod base;
 mod copy;
+mod gitsync;
 mod lifetime;
 mod limits;
+mod newmachine;
+mod onacopy;
+mod remote;
+mod spawn;
 
 pub use copy::BenchResult;
 pub use lifetime::{parse_duration, span};
 pub use limits::this_month;
+pub use newmachine::{SignInChange, SignInsSaved};
+pub use spawn::IDLE_MINUTES as SPAWN_IDLE_MINUTES;
 
 /// Clear of t3boat's ports (47731+): T3 Code may know a port from either app.
 const FIRST_PORT: u16 = 47371;
@@ -114,6 +122,12 @@ pub struct MachineView {
     pub delete_at: Option<i64>,
     /// The machine it was copied from.
     pub copied_from: Option<String>,
+    /// It's a base: kept stopped for copies to start from (`app/base.rs`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<crate::store::Base>,
+    /// It's a copy made for a checkout here (`app/spawn.rs`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spawned: Option<crate::store::Spawned>,
 }
 
 /// `detail` as `template` with `{left}` filled in: the time left until `ends_at` (unix ms).
@@ -200,6 +214,12 @@ pub struct App {
     total_limit_warned: Mutex<Option<String>>,
     /// Throwaway machines whose time is up while work still runs there, already told about.
     overdue_noted: Mutex<HashSet<String>>,
+    /// Spawns for agents, kept for `spawn_status` (`app/spawn.rs`).
+    spawn_jobs: Mutex<Vec<spawn::SpawnJob>>,
+    /// Spawned copies whose work is being brought back, by id.
+    collecting: Mutex<HashSet<String>>,
+    /// The sign-ins new machines get (`app/newmachine.rs`), as saved.
+    sign_ins: Mutex<newmachine::SavedSignIns>,
 }
 
 /// A machine t3agent37 made on this Agent37 account that this computer doesn't have: one made on
@@ -236,10 +256,12 @@ impl App {
             events,
             http: crate::agent37::EdgeClient::new()?,
         });
+        let sign_ins = Mutex::new(newmachine::SavedSignIns::load(&data_dir));
         let app = Arc::new(Self {
             shared,
             store,
             data_dir,
+            sign_ins,
             machines: RwLock::new(Vec::new()),
             creating: Mutex::new(Vec::new()),
             balance: Mutex::new(None),
@@ -250,11 +272,14 @@ impl App {
             elsewhere: Mutex::new(Vec::new()),
             total_limit_warned: Mutex::new(state.total_limit_warned),
             overdue_noted: Mutex::new(HashSet::new()),
+            spawn_jobs: Mutex::new(Vec::new()),
+            collecting: Mutex::new(HashSet::new()),
         });
         for record in state.machines {
             app.spawn(app.runtime(record));
         }
         tokio::spawn(app.clone().delete_leftover_sandboxes());
+        app.keep_skill_current();
         Ok(app)
     }
 
@@ -347,8 +372,12 @@ impl App {
     }
 
     pub fn update_settings(&self, settings: Settings) {
+        let spawn = (self.settings().agents_spawn, settings.agents_spawn);
         *self.shared.settings.write().unwrap() = settings;
         self.shared.persist();
+        if spawn.0 != spawn.1 {
+            self.skill_follows(spawn.1);
+        }
     }
 
     /// Claims the name and a local port for a new machine, so concurrent creates never share
@@ -389,14 +418,47 @@ impl App {
         self.shared.changed();
     }
 
-    /// Creates a machine, then adds this computer's T3 projects `projects` (ids) to it.
+    /// Creates a machine, signed in with what's saved here (`app/newmachine.rs`), runs the
+    /// user's setup script there, then adds this computer's T3 projects `projects` (ids) to it.
     /// `delete_after`: a throwaway one, deleted that many seconds from now (`app/lifetime.rs`).
     pub async fn create_machine(self: &Arc<Self>, name: &str, size: &str, projects: Vec<String>, delete_after: Option<u64>) -> Result<Arc<MachineRuntime>> {
+        let machine = self.create_bare(name, size, delete_after).await?;
+        let (app, m) = (self.clone(), machine.clone());
+        tokio::spawn(async move {
+            // Before its projects: private repos need GitHub, and setups the user's tools.
+            let notes = app.sign_in_new(&m, None).await;
+            for p in notes.problems {
+                app.shared.notify(format!("{} isn't fully signed in", m.record().name), p);
+            }
+            if let Some(Err(e)) = app.run_machine_setup(&m).await {
+                app.shared.notify(format!("Setting up {}", m.record().name), e);
+            }
+            for id in projects {
+                if let Err(e) = app.add_project(&m, &id).await {
+                    app.shared.notify(format!("A project didn't reach {}", m.record().name), format!("{e:#}"));
+                }
+            }
+        });
+        // The machine exists either way; its row still offers "Add to T3 Code". The dev driver
+        // can leave T3 Code alone (T3AGENT37_NO_AUTOPAIR) and pair by hand.
+        if std::env::var_os("T3AGENT37_NO_AUTOPAIR").is_some() {
+            return Ok(machine);
+        }
+        if let Err(e) = self.pair(&machine) {
+            self.shared.notify(format!("Couldn't open T3 Code for {name}"), format!("{e:#}; use Add to T3 Code"));
+        }
+        Ok(machine)
+    }
+
+    /// A new machine, up, with Claude's saved token: not yet added to T3 Code, its other
+    /// sign-ins and projects to follow.
+    async fn create_bare(self: &Arc<Self>, name: &str, size: &str, delete_after: Option<u64>) -> Result<Arc<MachineRuntime>> {
         if !valid_name(name) {
             bail!("machine names are 1-32 lowercase letters, digits or dashes, starting with a letter or digit");
         }
         let port = self.reserve(name)?;
         self.shared.changed();
+        let prepare = self.prepare_new();
         let result = async {
             let version = self.shared.t3.version().await?;
             let record = provision::create(
@@ -405,6 +467,7 @@ impl App {
                 size,
                 &version,
                 port,
+                prepare.as_deref(),
                 |sandbox| self.set_creating_sandbox(name, sandbox),
                 |step| self.set_creating_step(name, step),
             )
@@ -440,29 +503,14 @@ impl App {
         if let Some(id) = leftover {
             self.delete_leftover(&id).await;
         }
-        let machine = result?;
-        let (app, m) = (self.clone(), machine.clone());
-        tokio::spawn(async move {
-            for id in projects {
-                if let Err(e) = app.add_project(&m, &id).await {
-                    app.shared.notify(format!("A project didn't reach {}", m.record().name), format!("{e:#}"));
-                }
-            }
-        });
-        // The machine exists either way; its row still offers "Add to T3 Code". The dev driver
-        // can leave T3 Code alone (T3AGENT37_NO_AUTOPAIR) and pair by hand.
-        if std::env::var_os("T3AGENT37_NO_AUTOPAIR").is_some() {
-            return Ok(machine);
-        }
-        if let Err(e) = self.pair(&machine) {
-            self.shared.notify(format!("Couldn't open T3 Code for {name}"), format!("{e:#}; use Add to T3 Code"));
-        }
-        Ok(machine)
+        result
     }
 
     /// The account's t3agent37 machines this computer doesn't have, as last listed.
     pub fn elsewhere(&self) -> Vec<ElsewhereMachine> {
-        self.elsewhere.lock().unwrap().clone()
+        // One made here since the list was read is this computer's now.
+        let ours: HashSet<String> = self.machines().iter().map(|m| m.sandbox_id()).collect();
+        self.elsewhere.lock().unwrap().iter().filter(|m| !ours.contains(&m.id)).cloned().collect()
     }
 
     /// Lists the account's t3agent37 machines that this computer doesn't have, from Agent37
@@ -475,9 +523,12 @@ impl App {
         let mut ours: HashSet<String> = self.machines().iter().map(|m| m.sandbox_id()).collect();
         ours.extend(self.leftover_sandboxes.lock().unwrap().iter().cloned());
         ours.extend(self.creating.lock().unwrap().iter().filter_map(|c| c.sandbox.clone()));
+        // A copy is on Agent37's list minutes before its fork is answered with its id.
+        let being_made: HashSet<String> =
+            self.creating.lock().unwrap().iter().map(|c| crate::machine::provision::instance_name(&c.name)).collect();
         let found: Vec<ElsewhereMachine> = instances
             .iter()
-            .filter(|i| !ours.contains(&i.id))
+            .filter(|i| !ours.contains(&i.id) && !i.name.as_ref().is_some_and(|n| being_made.contains(n)))
             .filter_map(|i| {
                 Some(ElsewhereMachine {
                     id: i.id.clone(),
@@ -691,6 +742,12 @@ impl App {
         if let Err(e) = self.shared.t3.unlink(&record.environment_id).await {
             tracing::warn!("unlinking {id} from T3 Code: {e:#}");
         }
+        // Spawned machines that were copies of it start as new ones.
+        let mut settings = self.settings();
+        if settings.spawn_from.as_deref() == Some(record.name.as_str()) {
+            settings.spawn_from = None;
+            self.update_settings(settings);
+        }
         self.shared.persist();
         self.shared.changed();
         if !record.client_tokens.is_empty() {
@@ -738,6 +795,8 @@ impl App {
                 paused: None,
                 delete_at: None,
                 copied_from: None,
+                base: None,
+                spawned: None,
             });
         }
         views
@@ -1079,6 +1138,7 @@ impl App {
         self.check_awake_alerts();
         self.check_limits().await;
         self.check_lifetimes().await;
+        self.check_spawns().await;
     }
 
     /// Warns about a machine that has been awake for `awake_alert_hours` in a row, once per
@@ -1122,6 +1182,11 @@ impl App {
     }
 }
 
+/// The machine as the panel and agents see it.
+pub fn view_of(m: &MachineRuntime) -> MachineView {
+    view(m)
+}
+
 fn view(m: &MachineRuntime) -> MachineView {
     let r = m.record();
     let watchdog = m.watchdog_status();
@@ -1142,6 +1207,10 @@ fn view(m: &MachineRuntime) -> MachineView {
             let p = r.upkeep.paused.as_ref().expect("paused");
             let whose = if p.total { "your" } else { "its" };
             (Asleep, format!("Stopped · reached {whose} {} limit", crate::store::dollars(p.limit_usd)))
+        }
+        (Power::Stopped, _) if r.upkeep.base.is_some() => {
+            let refreshed = r.upkeep.base.as_ref().and_then(|b| b.refreshed_at).map(|t| format!(" · refreshed {} ago", span(chrono::Utc::now().timestamp() - t)));
+            (Asleep, format!("Base · stopped for copies{}", refreshed.unwrap_or_default()))
         }
         (_, _) if m.last_error().is_some() => (Error, m.last_error().unwrap_or_default()),
         (Power::Running, Some(w)) if w.agents_unknown => (Working, "T3 not answering · stays up 30m max".to_owned()),
@@ -1205,6 +1274,8 @@ fn view(m: &MachineRuntime) -> MachineView {
         paused: r.upkeep.paused.as_ref().map(|p| p.why(&r.name)),
         delete_at: r.upkeep.delete_at,
         copied_from: r.upkeep.copied_from.clone(),
+        base: r.upkeep.base.clone(),
+        spawned: r.upkeep.spawned.clone(),
     }
 }
 

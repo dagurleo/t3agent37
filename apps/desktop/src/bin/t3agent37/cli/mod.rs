@@ -132,6 +132,53 @@ const COMMANDS: &[Command] = &[
         Group::Machines,
     ),
     cmd(
+        "base",
+        "base [<machine> [on | off | refresh]], or base sync [<path> | --remove <path>]",
+        "Bases: a machine set up once (sign-ins and tools) kept stopped, so copies start from it. on makes one \
+         (it's stopped), off makes it a machine to work on again, refresh brings any projects on it up to date and \
+         stops it again. sync: files of this computer's (~/.claude/skills) that copies get",
+        &[("remove", true)],
+        Group::Machines,
+    ),
+    cmd(
+        "on-a-copy",
+        "on-a-copy [on | off]",
+        "Whether agents here may send work to copies of the base: on, a thread in any project in T3 Code can say \
+         \"on a copy: …\" (or /on-a-copy) and the task runs on a copy with the project as it is, its changes brought \
+         back. Installs a skill for Claude and Codex here that says how; off removes it",
+        &[],
+        Group::Machines,
+    ),
+    cmd(
+        "new-machines",
+        "new-machines [start <new | base>], new-machines <claude | codex> [--remove], new-machines github \
+         [--from-gh | --remove [<number>]], or new-machines setup <script> | --remove",
+        "What new machines start with: sign-ins saved here and written onto each machine t3agent37 creates (Claude's \
+         token from `claude setup-token`, GitHub tokens, an OpenAI API key for Codex; each asked for, hidden; \
+         --from-gh takes this computer's gh sign-in), and a setup script of yours they run. start: whether \
+         spawned machines (spawn, run, on a copy) are new ones (the default) or copies of a base. Alone: what's \
+         saved, never the secrets",
+        &[("remove", false), ("from-gh", false)],
+        Group::Machines,
+    ),
+    cmd(
+        "spawn",
+        "spawn [--new | --base <base>] [--size <size>] [--max-hours <hours>]",
+        "A throwaway machine with this checkout as it is (its branch, commits not pushed, changes not committed), \
+         linked into T3 Code for agents here: new, or a copy of a base, as `new-machines start` says (--new and \
+         --base for this one). `collect` brings its work back; it goes after 30 minutes with nothing running",
+        &[("new", false), ("base", true), ("size", true), ("max-hours", true)],
+        Group::Machines,
+    ),
+    cmd(
+        "collect",
+        "collect <machine> [--no-apply] [--keep]",
+        "Bring a spawned copy's work back into its checkout: a branch t3agent37/<machine> there (t3agent37-<machine> where the repo has a branch named t3agent37), and its changes \
+         made to the files when they fit (--no-apply: the branch only). Then delete it (--keep keeps it)",
+        &[("no-apply", false), ("keep", false)],
+        Group::Machines,
+    ),
+    cmd(
         "delete-after",
         "delete-after <machine> <time | never>",
         "Delete a machine some time from now (90m, 2h, 1d), or once its agents finish if they still work then; \
@@ -194,10 +241,22 @@ const COMMANDS: &[Command] = &[
     ),
     cmd(
         "sign-in",
-        "sign-in <machine> <claude | codex | github> [--other-account], or sign-in <machine> --cancel",
+        "sign-in <machine> <claude | codex | github> [--other-account], sign-in <machine> claude --token | --no-token, or \
+         sign-in <machine> --cancel",
         "Sign an agent, or GitHub, in on the machine, in your browser. --other-account: a private window. --cancel \
-         stops a sign-in that waits (its old sign-in stays)",
-        &[("other-account", false), ("cancel", false)],
+         stops a sign-in that waits (its old sign-in stays). claude --token: a long-lived token from `claude \
+         setup-token` (asked for, hidden), which copies of a base share without signing each other out; \
+         --no-token goes back to the login",
+        &[("other-account", false), ("cancel", false), ("token", false), ("no-token", false)],
+        Group::Work,
+    ),
+    cmd(
+        "run",
+        "run [--new | --base <base>] [--size <size>] [--timeout <minutes>] -- <command>",
+        "Run a command (a build, the tests) on a machine of its own with this checkout's files as they are now \
+         (new, or a copy of a base, as for spawn): its output shows here as it comes, and its exit code is this \
+         command's. The machine is kept for the next run, and goes after 30 minutes without one",
+        &[("new", false), ("base", true), ("size", true), ("timeout", true)],
         Group::Work,
     ),
     cmd(
@@ -491,6 +550,129 @@ async fn run(raw: Vec<String>) -> Result<i32> {
             let names: Vec<String> = sizes.iter().map(|s| format!("{}-{s}", machine.chars().take(24).collect::<String>())).collect();
             watched_all(&b, &names, b.call("bench", args)).await?
         }
+        "on-a-copy" => {
+            let on = a.maybe_word().map(|w| on_off(&w)).transpose().map_err(usage)?;
+            a.done().map_err(usage)?;
+            b.call("on_a_copy", json!({ "on": on })).await?
+        }
+        "base" => match a.maybe_word().as_deref() {
+            Some("sync") => {
+                let path = a.maybe_word();
+                a.done().map_err(usage)?;
+                let (path, add) = match (path, a.value("remove")) {
+                    (Some(p), None) => (Some(p), true),
+                    (None, Some(r)) => (Some(r.to_owned()), false),
+                    (None, None) => (None, false),
+                    (Some(_), Some(_)) => return Err(usage("a path to add, or --remove one, not both".into())),
+                };
+                let path = path.map(|p| std::path::absolute(&p).map(|a| a.to_string_lossy().into_owned()).unwrap_or(p));
+                b.call("base_sync", json!({ "path": path, "add": add })).await?
+            }
+            None => {
+                a.done().map_err(usage)?;
+                b.call("base", json!({})).await?
+            }
+            Some(machine) => {
+                let action = a.maybe_word();
+                a.done().map_err(usage)?;
+                match action.as_deref() {
+                    Some("on") => eprintln!("{}", show::dim("Stopping it as a base.")),
+                    Some("refresh") => eprintln!(
+                        "{}",
+                        show::dim("Starting it, bringing its projects up to date and setting them up, then stopping it: a few minutes. ^C stops waiting, not the refresh.")
+                    ),
+                    _ => {}
+                }
+                b.call("base", json!({ "machine": machine, "action": action })).await?
+            }
+        },
+        "new-machines" => match a.maybe_word().as_deref() {
+            None => {
+                a.done().map_err(usage)?;
+                b.call("new_machines", json!({})).await?
+            }
+            Some("start") => {
+                let from = a.word("new, or a base").map_err(usage)?;
+                a.done().map_err(usage)?;
+                b.call("new_machines_start", json!({ "from": from })).await?
+            }
+            Some("setup") => {
+                let path = a.maybe_word();
+                a.done().map_err(usage)?;
+                let path = match (path, a.flag("remove")) {
+                    (Some(p), false) => Some(std::path::absolute(&p).map(|a| a.to_string_lossy().into_owned()).unwrap_or(p)),
+                    (None, true) => None,
+                    _ => return Err(usage("a script, or --remove".into())),
+                };
+                b.call("machine_setup", json!({ "path": path })).await?
+            }
+            Some(agent @ ("claude" | "codex" | "github")) => {
+                let number = a.maybe_word();
+                a.done().map_err(usage)?;
+                if a.flag("remove") {
+                    let number = number.map(|n| n.parse::<usize>().map_err(|_| usage(format!("{n}: a number, as `t3agent37 new-machines` lists them")))).transpose()?;
+                    b.call("save_sign_in", json!({ "agent": agent, "remove": true, "number": number })).await?
+                } else {
+                    if number.is_some() {
+                        return Err(usage("the secret is asked for, hidden: not on the command line".into()));
+                    }
+                    let token = if agent == "github" && a.flag("from-gh") { gh_token()? } else { ask_sign_in(agent)? };
+                    b.call("save_sign_in", json!({ "agent": agent, "token": token })).await?
+                }
+            }
+            Some(other) => return Err(usage(format!("{other}: start, claude, github, codex or setup"))),
+        },
+        "spawn" => {
+            a.done().map_err(usage)?;
+            let path = std::env::current_dir()?.to_string_lossy().into_owned();
+            let mut args = json!({ "path": path });
+            for (flag, key) in [("base", "base"), ("size", "size")] {
+                if let Some(v) = a.value(flag) {
+                    args[key] = json!(v);
+                }
+            }
+            new_or_base(&a, &mut args).map_err(usage)?;
+            if let Some(h) = a.value("max-hours") {
+                args["maxHours"] = json!(h.parse::<u64>().ok().filter(|h| (1..=168).contains(h)).ok_or_else(|| usage(format!("{h}: hours, 1 to 168")))?);
+            }
+            eprintln!(
+                "{}",
+                show::dim("Making a machine with this checkout's files: a minute or two for a new one, several for a copy of a base. ^C stops waiting, not the machine.")
+            );
+            b.call("spawn_machine", args).await?
+        }
+        "collect" => {
+            let machine = a.word("a spawned machine").map_err(usage)?;
+            a.done().map_err(usage)?;
+            b.call("collect_machine", json!({ "machine": machine, "apply": !a.flag("no-apply"), "keep": a.flag("keep") })).await?
+        }
+        "run" => {
+            let mut words = Vec::new();
+            while let Some(w) = a.maybe_word() {
+                words.push(w);
+            }
+            // One word is a shell line as it is ("cargo build && cargo test"); several are a
+            // command and its arguments, each kept whole.
+            let command = match words.as_slice() {
+                [one] => one.clone(),
+                many => many.iter().map(|w| t3agent37_lib::agent37::shell_quote(w)).collect::<Vec<_>>().join(" "),
+            };
+            if command.trim().is_empty() {
+                return Err(usage("say what to run after --: t3agent37 run -- cargo test".into()));
+            }
+            let timeout: u32 = match a.value("timeout") {
+                Some(t) => t.parse().ok().filter(|t| (1..=1440).contains(t)).ok_or_else(|| usage(format!("{t}: a number of minutes, up to 1440")))?,
+                None => 120,
+            };
+            let mut args = json!({ "path": std::env::current_dir()?.to_string_lossy(), "command": command, "timeoutMinutes": timeout });
+            for key in ["base", "size"] {
+                if let Some(v) = a.value(key) {
+                    args[key] = json!(v);
+                }
+            }
+            new_or_base(&a, &mut args).map_err(usage)?;
+            return run_remote(&b, args).await;
+        }
         "delete-after" => {
             let machine = a.word("a machine").map_err(usage)?;
             let time = a.word("a time (90m, 2h, 1d) or never").map_err(usage)?;
@@ -603,6 +785,25 @@ async fn run(raw: Vec<String>) -> Result<i32> {
                 other => return Err(usage(format!("no agent {other}: claude, codex or github"))),
             };
             a.done().map_err(usage)?;
+            if a.flag("token") || a.flag("no-token") {
+                if agent != "Claude" {
+                    return Err(usage("--token is for claude".into()));
+                }
+                let token = if a.flag("no-token") {
+                    None
+                } else {
+                    if std::io::stdin().is_terminal() {
+                        eprintln!("{}", show::dim("Make one with `claude setup-token` (in your browser; it lasts a year), then paste it here."));
+                    }
+                    let t = serve::read_secret("Claude's token: ")?;
+                    if t.is_empty() {
+                        bail!("no token given");
+                    }
+                    Some(t)
+                };
+                eprintln!("{}", show::dim(&format!("Putting it on {machine} and restarting T3 there; about half a minute.")));
+                return print_text(b.call("claude_token", json!({ "machine": machine, "token": token })).await?);
+            }
             eprintln!(
                 "{}",
                 show::dim(&format!(
@@ -793,6 +994,107 @@ fn terminal_width() -> usize {
             .map(|out| String::from_utf8_lossy(&out.stdout).into_owned());
         size.and_then(|s| s.split_whitespace().nth(1)?.parse().ok()).filter(|w| *w > 20).unwrap_or(80)
     })
+}
+
+
+/// Prints a call's answer as the commands do, and succeeds.
+fn print_text(text: String) -> Result<i32> {
+    println!("{}", text.trim_end());
+    Ok(0)
+}
+
+/// `run`: starts the command on the checkout's copy of the base, then prints its output as it
+/// comes. ^C stops it there too. The command's exit code is this one's.
+/// `--new`: a new machine this time, whatever `new-machines start` says.
+fn new_or_base(a: &Args, args: &mut Value) -> Result<(), String> {
+    if a.flag("new") {
+        if a.value("base").is_some() {
+            return Err("--new or --base, not both".into());
+        }
+        args["base"] = json!("new");
+    }
+    Ok(())
+}
+
+/// A sign-in for new machines, asked for (hidden).
+fn ask_sign_in(agent: &str) -> Result<String> {
+    let (hint, prompt) = match agent {
+        "claude" => ("Make one with `claude setup-token` (in your browser; it lasts a year), then paste it here.", "Claude's token: "),
+        "codex" => ("An OpenAI API key (platform.openai.com → API keys): Codex bills it per use, not your ChatGPT plan.", "OpenAI API key: "),
+        _ => (
+            "A GitHub token: a fine-grained one for some repos or an organization's, or a classic one. --from-gh takes this computer's gh sign-in instead.",
+            "GitHub token: ",
+        ),
+    };
+    if std::io::stdin().is_terminal() {
+        eprintln!("{}", show::dim(hint));
+    }
+    let t = serve::read_secret(prompt)?;
+    if t.is_empty() {
+        bail!("nothing given");
+    }
+    Ok(t)
+}
+
+/// This computer's gh sign-in, as `gh auth token` gives it. Never printed.
+fn gh_token() -> Result<String> {
+    let out = std::process::Command::new("gh")
+        .args(["auth", "token", "--hostname", "github.com"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| anyhow!("running gh here: {e}"))?;
+    let token = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if !out.status.success() || token.is_empty() {
+        bail!("gh isn't signed in to GitHub here (`gh auth login`)");
+    }
+    Ok(token)
+}
+
+async fn run_remote(b: &Backend, args: Value) -> Result<i32> {
+    use base64::Engine;
+    eprintln!("{}", show::dim("Sending this checkout's files to its machine (made the first time: a minute or two, several for a copy of a base)."));
+    let started = b.json("run_start", args).await?;
+    let machine = started["machine"].as_str().unwrap_or_default().to_owned();
+    let job = started["job"].as_str().unwrap_or_default().to_owned();
+    let made = if started["made"] == true { ", made just now" } else { "" };
+    eprintln!(
+        "{}",
+        show::dim(&format!("On {machine} ({}, {}{made}):", started["size"].as_str().unwrap_or_default(), started["from"].as_str().unwrap_or("a copy of a base")))
+    );
+    let mut offset: u64 = 0;
+    let mut stdout = std::io::stdout();
+    loop {
+        let read = b.json("run_output", json!({ "machine": machine, "job": job, "offset": offset }));
+        let out = tokio::select! {
+            out = read => out?,
+            _ = tokio::signal::ctrl_c() => {
+                b.call("run_stop", json!({ "machine": machine, "job": job })).await?;
+                eprintln!("{}", show::dim(&format!("Stopped it on {machine}.")));
+                return Ok(130);
+            }
+        };
+        let bytes = base64::engine::general_purpose::STANDARD.decode(out["output"].as_str().unwrap_or_default())?;
+        stdout.write_all(&bytes)?;
+        stdout.flush()?;
+        offset += bytes.len() as u64;
+        let more = out["more"] == true;
+        if let Some(code) = out["exitCode"].as_i64().filter(|_| !more) {
+            if code == 124 {
+                eprintln!("{}", show::dim("It ran past its --timeout and was stopped."));
+            }
+            return Ok(code as i32);
+        }
+        if !more {
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                _ = tokio::signal::ctrl_c() => {
+                    b.call("run_stop", json!({ "machine": machine, "job": job })).await?;
+                    eprintln!("{}", show::dim(&format!("Stopped it on {machine}.")));
+                    return Ok(130);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

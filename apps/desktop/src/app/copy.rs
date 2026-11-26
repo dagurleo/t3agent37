@@ -79,7 +79,9 @@ impl App {
         self.set_creating_step(name, &format!("Copying {} on Agent37", from_record.name));
         // The copy's watchdog calls the original's heartbeat once as it boots, which wakes the
         // original if it slept: it's put back to sleep after.
-        let was_asleep = self.shared.a37.get(&from_record.sandbox_id).await.ok().flatten().is_some_and(|i| i.status != "running");
+        // A base is stopped, which nothing wakes.
+        let was_asleep = from_record.upkeep.base.is_none()
+            && self.shared.a37.get(&from_record.sandbox_id).await.ok().flatten().is_some_and(|i| i.status != "running");
         let result = async {
             let version = self.shared.t3.version().await?;
             let instance = self.fork(&from_record.sandbox_id, name, size_info).await?;
@@ -203,7 +205,7 @@ impl App {
     }
 
     /// `base`, or `base-2`, `base-3`… when that's taken.
-    fn free_name(&self, base: &str) -> String {
+    pub(super) fn free_name(&self, base: &str) -> String {
         let taken = |n: &str| {
             self.machines().iter().any(|m| m.record().name.eq_ignore_ascii_case(n))
                 || self.creating.lock().unwrap().iter().any(|c| c.name.eq_ignore_ascii_case(n))
